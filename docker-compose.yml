@@ -1,0 +1,16 @@
+# ============================================================
+# docker-compose.yml: Mermaid Web Converter 컨테이너 오케스트레이션
+# 상세: 단일 서비스 구성 — 포트, 환경 변수, 볼륨 마운트 포함
+# 생성일: 2026-04-07
+# ============================================================
+
+services:
+  mermaid-converter:
+    build: .
+    ports:
+      - "${PORT:-8205}:${PORT:-8205}"
+    environment:
+      - PORT=${PORT:-8205}
+    volumes:
+      - ./jobs:/app/backend/jobs
+    restart: unless-stopped
