@@ -31,9 +31,10 @@ WORKDIR /app
 # 백엔드 및 프론트엔드 파일 복사
 COPY backend/ /app/backend/
 COPY frontend/ /app/frontend/
+COPY requirements.txt /app/requirements.txt
 
 # Python 의존성 설치
-RUN pip install --no-cache-dir -r /app/backend/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
 # 작업 디렉토리를 백엔드로 변경
 WORKDIR /app/backend
