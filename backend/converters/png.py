@@ -6,10 +6,13 @@
 # ============================================================
 
 import json
+import logging
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 # Mermaid 테마 설정 (generate_diagrams.py 스타일과 동일)
@@ -156,8 +159,8 @@ def mermaid_to_png(mermaid_code: str, title: str = "") -> bytes:
     if shutil.which("libreoffice") is not None:
         try:
             return _png_via_pptx(mermaid_code, title)
-        except Exception:
-            pass  # LibreOffice 실패 시 mmdc 폴백
+        except Exception as exc:
+            logger.warning("LibreOffice PNG 변환 실패, mmdc 폴백: %s", exc)
 
     # 2차 폴백: mmdc 직접 PNG 생성
     return _png_via_mmdc(mermaid_code)
@@ -214,6 +217,9 @@ def _png_via_mmdc(mermaid_code: str) -> bytes:
         css_path = tmp_path / "style.css"
         css_path.write_text(_COMMON_CSS, encoding="utf-8")
 
+        # Puppeteer config (Docker root 환경에서 --no-sandbox 필요)
+        puppeteer_config = Path(__file__).resolve().parent.parent / "puppeteer-config.json"
+
         cmd = [
             "mmdc",
             "-i", str(input_path),
@@ -224,6 +230,8 @@ def _png_via_mmdc(mermaid_code: str) -> bytes:
             "-c", str(config_path),
             "--cssFile", str(css_path),
         ]
+        if puppeteer_config.exists():
+            cmd += ["-p", str(puppeteer_config)]
 
         try:
             result = subprocess.run(
