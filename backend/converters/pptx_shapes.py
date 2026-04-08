@@ -408,6 +408,52 @@ def compute_layout(diagram: ParsedDiagram) -> None:
             list(diagram.nodes.keys()), diagram.nodes, content_x, content_y, avail_w
         )
 
+    # 오버플로우 감지 → 자동 축소
+    _scale_to_fit(diagram, content_x, content_y, avail_w, avail_h)
+
+
+def _scale_to_fit(
+    diagram: "ParsedDiagram",
+    content_x: float,
+    content_y: float,
+    avail_w: float,
+    avail_h: float,
+) -> None:
+    """배치된 다이어그램이 슬라이드를 벗어나면 전체를 축소한다."""
+    if not diagram.nodes:
+        return
+
+    max_x = max(n.x + n.w for n in diagram.nodes.values())
+    max_y = max(n.y + n.h for n in diagram.nodes.values())
+
+    # 서브그래프 영역도 포함
+    for sg in diagram.subgraphs.values():
+        max_x = max(max_x, sg.x + sg.w)
+        max_y = max(max_y, sg.y + sg.h)
+
+    bound_r = content_x + avail_w
+    bound_b = content_y + avail_h
+
+    if max_x <= bound_r and max_y <= bound_b:
+        return  # 축소 불필요
+
+    scale_x = avail_w / (max_x - content_x) if max_x > bound_r else 1.0
+    scale_y = avail_h / (max_y - content_y) if max_y > bound_b else 1.0
+    scale = min(scale_x, scale_y)
+    scale = max(scale, 0.4)  # 최소 40% — 가독성 보장
+
+    for node in diagram.nodes.values():
+        node.x = content_x + (node.x - content_x) * scale
+        node.y = content_y + (node.y - content_y) * scale
+        node.w *= scale
+        node.h *= scale
+
+    for sg in diagram.subgraphs.values():
+        sg.x = content_x + (sg.x - content_x) * scale
+        sg.y = content_y + (sg.y - content_y) * scale
+        sg.w *= scale
+        sg.h *= scale
+
 
 # ──────────────────────────────────────────────
 # PPTX 렌더러
