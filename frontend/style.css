@@ -48,7 +48,7 @@
   --transition-slow:   400ms cubic-bezier(.4,0,.2,1);
 
   --font-sans: 'Pretendard', 'Noto Sans KR', 'Apple SD Gothic Neo', system-ui, -apple-system, sans-serif;
-  --font-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  --font-mono: 'D2Coding ligature', 'D2Coding', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
 }
 
 /* ============================================================
@@ -685,6 +685,18 @@ body {
   font-size: 0.8rem;
   color: #1e293b;
   line-height: 1.5;
+}
+
+/* <code>는 user-agent stylesheet의 monospace에 덮이므로 명시적으로 D2Coding 체인을 지정.
+   ligature는 트리라인(├ └ ─) 칸 정렬 깨짐을 방지하기 위해 off. */
+.mermaid-source pre code,
+.mermaid-source code {
+  font-family: var(--font-mono);
+  font-size: inherit;
+  line-height: inherit;
+  color: inherit;
+  background: transparent;
+  font-feature-settings: "liga" 0, "calt" 0;
 }
 
 /* ============================================================

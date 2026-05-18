@@ -549,7 +549,7 @@ function initPanZoom(container, content) {
     content.style.transformOrigin = '0 0';
   }
 
-  // 휠 줌 — 마우스 커서 위치 기준 (scale 범위: 0.2 ~ 5x)
+  // 휠 줌 — 마우스 커서 위치 기준 (scale 범위: 0.2 ~ 20x)
   container.addEventListener('wheel', (e) => {
     e.preventDefault();
     const rect = container.getBoundingClientRect();
@@ -557,7 +557,7 @@ function initPanZoom(container, content) {
     const mouseY = e.clientY - rect.top;
 
     const delta = e.deltaY > 0 ? 0.85 : 1.18;
-    const newScale = Math.min(5, Math.max(0.2, scale * delta));
+    const newScale = Math.min(20, Math.max(0.2, scale * delta));
 
     translateX = mouseX - (mouseX - translateX) * (newScale / scale);
     translateY = mouseY - (mouseY - translateY) * (newScale / scale);
