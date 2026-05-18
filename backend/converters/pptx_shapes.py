@@ -2,7 +2,8 @@
 # pptx_shapes.py: Mermaid → 편집 가능한 PowerPoint 도형 변환기
 # 상세: Mermaid 코드를 파싱하여 네이티브 도형으로 구성된 PPTX 생성
 #       flowchart/graph 및 sequenceDiagram 지원
-#       엣지는 mmdc SVG polyline 좌표 + 노드 회피 ELBOW 라우팅 적용
+#       엣지는 mmdc SVG polyline + 8방향 corner detour v2 + 다단계 우회
+#       서브그래프 타이틀바도 회피 대상에 포함
 # 생성일: 2026-04-07 | 수정일: 2026-05-18
 # ============================================================
 
@@ -1415,23 +1416,73 @@ def _make_elbow_candidates(s, e) -> list[list[tuple[float, float]]]:
     ]
 
 
+def _path_length(path) -> float:
+    """경로 총 길이 (Manhattan distance). 폴리라인 segment 길이의 합."""
+    return sum(
+        abs(path[i + 1][0] - path[i][0]) + abs(path[i + 1][1] - path[i][1])
+        for i in range(len(path) - 1)
+    )
+
+
 def _try_corner_detour(s, e, bboxes, padding: float):
-    """각 bbox의 외곽 4모서리를 우회점 후보로 s→corner→e ELBOW 시도.
-    corner는 padding 2배 거리로 둬 검사 시 경계 교차로 오판정되지 않게 한다."""
+    """8방향 후보 + 다단계 우회로 회피 경로 탐색 (v2).
+
+    1단계: 각 bbox마다 외곽 padding 적용 후 8개 후보점 수집
+           (4모서리 + 4변 중간점).
+    2단계: 후보당 3가지 ELBOW 변형(H→V→H→V, V→H→V→H, 단순 H→V→H) 시도,
+           bbox 교차 통과 + 최단 Manhattan 거리 후보를 best로 추적.
+    3단계: candidates[:16]을 c1/c2 후보로 사용해 s→c1→c2→e 두 단계 우회.
+    4단계: 모든 통과 경로 중 가장 짧은 경로 반환, 없으면 None.
+    """
     detour_offset = padding * 2.0
+
+    # 1단계: 8방향 후보 점 수집
+    candidates: list[tuple[float, float]] = []
     for bx in bboxes:
         x1, y1, x2, y2 = bx
-        corners = [
-            (x1 - detour_offset, y1 - detour_offset),
-            (x2 + detour_offset, y1 - detour_offset),
-            (x2 + detour_offset, y2 + detour_offset),
-            (x1 - detour_offset, y2 + detour_offset),
+        px1 = x1 - detour_offset
+        py1 = y1 - detour_offset
+        px2 = x2 + detour_offset
+        py2 = y2 + detour_offset
+        mid_x = (px1 + px2) / 2.0
+        mid_y = (py1 + py2) / 2.0
+        candidates.extend([
+            (px1, py1), (px2, py1), (px2, py2), (px1, py2),     # 4 모서리
+            (mid_x, py1), (px2, mid_y), (mid_x, py2), (px1, mid_y),  # 4 변 중간점
+        ])
+
+    best_path = None
+    best_length = float("inf")
+
+    # 2단계: 단일 후보 경로 변형 시도
+    for cx, cy in candidates:
+        path_variants = [
+            [s, (cx, s[1]), (cx, cy), (e[0], cy), e],   # H→V→H→V
+            [s, (s[0], cy), (cx, cy), (cx, e[1]), e],   # V→H→V→H
+            [s, (cx, s[1]), (cx, e[1]), e],             # 단순 H→V→H
         ]
-        for cx, cy in corners:
-            path = [s, (cx, s[1]), (cx, cy), (e[0], cy), e]
+        for path in path_variants:
             if not _path_intersects_any(path, bboxes, padding):
-                return path
-    return None
+                length = _path_length(path)
+                if length < best_length:
+                    best_length = length
+                    best_path = path
+
+    # 3단계: 두 단계 우회 (조합 폭발 방지 위해 candidates[:16])
+    limited = candidates[:16]
+    for c1 in limited:
+        for c2 in limited:
+            if c1 == c2:
+                continue
+            path = [s, (c1[0], s[1]), c1, c2, (e[0], c2[1]), e]
+            if not _path_intersects_any(path, bboxes, padding):
+                length = _path_length(path)
+                if length < best_length:
+                    best_length = length
+                    best_path = path
+
+    # 4단계: 최단 경로 반환 (없으면 None)
+    return best_path
 
 
 def _route_around_nodes(start, end, avoid_bboxes, padding: float = 0.1):
@@ -1590,6 +1641,7 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
 
     # 3) 엣지 (polyline 다중 connector) — 노드 회피 라우팅 적용
     AVOID_PADDING = 0.1
+    SUBGRAPH_TITLE_H = 0.26  # _add_subgraph_box_at의 title_h와 동일
     for edge in layout.edges:
         if edge.source not in shape_map or edge.target not in shape_map:
             continue
@@ -1597,12 +1649,17 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
         if len(pts) < 2:
             continue
 
-        # 회피 박스: source/target 외 모든 노드 (off_x/off_y 적용된 절대 좌표)
+        # 회피 박스: source/target 외 모든 노드 + 모든 서브그래프 타이틀바
+        # (타이틀바는 라벨 텍스트가 있는 얇은 띠라 통과 시 시각적 충돌 발생)
         avoid = [
             (off_x + n.x, off_y + n.y, off_x + n.x + n.w, off_y + n.y + n.h)
             for nid, n in layout.nodes.items()
             if nid not in (edge.source, edge.target)
         ]
+        avoid.extend(
+            (off_x + cl.x, off_y + cl.y, off_x + cl.x + cl.w, off_y + cl.y + SUBGRAPH_TITLE_H)
+            for cl in layout.clusters
+        )
 
         if len(pts) == 2:
             # 단순 직선 → 전체 회피 라우팅
