@@ -1096,7 +1096,22 @@ def mermaid_to_pptx(mermaid_code: str, title: str = "") -> bytes:
     if 'sequencediagram' in first_line.replace(' ', ''):
         return _render_sequence(mermaid_code, title)
 
-    # 1. 파싱
+    # 새 레이아웃 엔진(mmdc SVG) 시도 — 성공 시 dagre 품질 그대로 사용
+    try:
+        from converters.layout_engine import compute_layout_via_mmdc
+        layout = compute_layout_via_mmdc(
+            mermaid_code,
+            target_w_in=SLIDE_W - 2 * MARGIN,
+            target_h_in=SLIDE_H - TITLE_H - 2 * MARGIN,
+            puppeteer_config="/app/backend/puppeteer-config.json",
+        )
+    except Exception:
+        layout = None
+
+    if layout is not None and layout.nodes:
+        return _render_pptx_from_layout(layout, title)
+
+    # 1. 파싱 (폴백)
     diagram = parse_mermaid(mermaid_code)
 
     if not diagram.nodes:
@@ -1188,6 +1203,282 @@ def mermaid_to_pptx(mermaid_code: str, title: str = "") -> bytes:
         _add_connector_elbow(slide, src_shape, dst_shape, label=edge.label)
 
     # 9. BytesIO로 저장 후 바이트 반환
+    output = BytesIO()
+    prs.save(output)
+    output.seek(0)
+    return output.read()
+
+
+# ──────────────────────────────────────────────
+# mmdc SVG 기반 레이아웃 렌더러 (신규)
+# ──────────────────────────────────────────────
+
+def _add_title_and_bg(slide, title: str) -> None:
+    """슬라이드 배경(흰색) + 제목 + 하단 구분선을 추가한다."""
+    background = slide.background
+    background.fill.solid()
+    background.fill.fore_color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+
+    if not title:
+        return
+
+    title_box = slide.shapes.add_textbox(
+        Inches(MARGIN), Inches(0.1),
+        Inches(SLIDE_W - 2 * MARGIN), Inches(TITLE_H),
+    )
+    tf = title_box.text_frame
+    para = tf.paragraphs[0]
+    para.alignment = PP_ALIGN.LEFT
+    run = para.add_run()
+    run.text = title
+    run.font.size = Pt(22)
+    run.font.bold = True
+    run.font.color.rgb = RGBColor(0x1E, 0x29, 0x3B)
+    try:
+        rPr = run._r.get_or_add_rPr()
+        ea = etree.SubElement(rPr, qn("a:ea"))
+        ea.set("typeface", "맑은 고딕")
+        latin = rPr.find(qn("a:latin"))
+        if latin is None:
+            latin = etree.SubElement(rPr, qn("a:latin"))
+        latin.set("typeface", "맑은 고딕")
+    except Exception:
+        pass
+
+    line_bar = slide.shapes.add_shape(
+        MSO_SHAPE.ROUNDED_RECTANGLE,
+        Inches(MARGIN), Inches(TITLE_H + 0.05),
+        Inches(SLIDE_W - 2 * MARGIN), Inches(0.03),
+    )
+    line_bar.fill.solid()
+    line_bar.fill.fore_color.rgb = RGBColor(0x3B, 0x82, 0xF6)
+    line_bar.line.fill.background()
+    remove_style_element(line_bar._element)
+    _remove_shadow(line_bar)
+
+
+def _add_subgraph_box_at(
+    slide, x: float, y: float, w: float, h: float,
+    label: str, fill_color: RGBColor, idx: int,
+) -> None:
+    """layout 좌표(inches)를 받아 draw.io 스타일 서브그래프 박스를 그린다."""
+    stroke_color = _SUBGRAPH_STROKES[idx % len(_SUBGRAPH_STROKES)]
+    title_h = 0.26
+    CORNER_RADIUS_IN = 0.10
+    line_w = Pt(0.75)
+
+    adj_container = _calc_adj(CORNER_RADIUS_IN, w, h)
+    adj_title = _calc_adj(CORNER_RADIUS_IN, w, title_h)
+
+    container = slide.shapes.add_shape(
+        MSO_SHAPE.ROUNDED_RECTANGLE,
+        Inches(x), Inches(y), Inches(w), Inches(h),
+    )
+    container.fill.solid()
+    container.fill.fore_color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+    container.line.color.rgb = stroke_color
+    container.line.width = line_w
+    _set_corner_radius(container, adj_container)
+    _remove_shadow(container)
+    remove_style_element(container._element)
+    tf = container.text_frame
+    tf.margin_top = Pt(0)
+    tf.margin_bottom = Pt(0)
+
+    title_shape = slide.shapes.add_shape(
+        MSO_SHAPE.ROUND_2_SAME_RECTANGLE,
+        Inches(x), Inches(y), Inches(w), Inches(title_h),
+    )
+    title_shape.fill.solid()
+    title_shape.fill.fore_color.rgb = fill_color
+    title_shape.line.color.rgb = stroke_color
+    title_shape.line.width = line_w
+    _set_corner_radius(title_shape, adj_title, adj2_val=0)
+    _remove_shadow(title_shape)
+    remove_style_element(title_shape._element)
+
+    tf2 = title_shape.text_frame
+    tf2.auto_size = None
+    tf2.word_wrap = True
+    tf2.margin_top = Pt(3)
+    tf2.margin_bottom = Pt(2)
+    tf2.margin_left = Pt(6)
+    tf2.margin_right = Pt(6)
+    txBody = title_shape._element.find(qn("p:txBody"))
+    if txBody is not None:
+        bodyPr = txBody.find(qn("a:bodyPr"))
+        if bodyPr is not None:
+            bodyPr.set("anchor", "ctr")
+    p = tf2.paragraphs[0]
+    p.alignment = PP_ALIGN.CENTER
+    run = p.add_run()
+    run.text = label
+    run.font.size = Pt(9)
+    run.font.bold = True
+    run.font.color.rgb = stroke_color
+
+    try:
+        rPr = run._r.get_or_add_rPr()
+        ea = etree.SubElement(rPr, qn("a:ea"))
+        ea.set("typeface", "맑은 고딕")
+        latin = rPr.find(qn("a:latin"))
+        if latin is None:
+            latin = etree.SubElement(rPr, qn("a:latin"))
+        latin.set("typeface", "맑은 고딕")
+    except Exception:
+        pass
+
+
+def _add_node_at(
+    slide, x: float, y: float, w: float, h: float,
+    label: str, shape: str, palette_idx: int,
+) -> object:
+    """layout 좌표(inches)에 노드 도형을 추가하고 도형 객체 반환."""
+    fill_c, stroke_c, text_c = _PALETTE[palette_idx % len(_PALETTE)]
+    if shape == "diamond":
+        return _add_diamond(slide, x, y, w, h, fill_c, stroke_c, label, text_color=text_c)
+    if shape == "circle":
+        return _add_oval(slide, x, y, w, h, fill_c, stroke_c, label, text_color=text_c)
+    return _add_rounded_rect(slide, x, y, w, h, fill_c, stroke_c, label, text_color=text_c)
+
+
+def _add_polyline_edge(
+    slide, points_in: list[tuple[float, float]],
+    dashed: bool = False,
+) -> None:
+    """polyline(inches 좌표 시퀀스)을 STRAIGHT connector 다중으로 그리고,
+    마지막 segment에만 화살표 머리를 부여한다."""
+    if len(points_in) < 2:
+        return
+    from pptx.enum.dml import MSO_LINE_DASH_STYLE
+
+    line_color = RGBColor(0x47, 0x55, 0x69)
+    line_w = Pt(1.2)
+
+    for i in range(len(points_in) - 1):
+        x1, y1 = points_in[i]
+        x2, y2 = points_in[i + 1]
+        sx_emu = Inches(x1)
+        sy_emu = Inches(y1)
+        ex_emu = Inches(x2)
+        ey_emu = Inches(y2)
+        if sx_emu == ex_emu:
+            ex_emu += 1
+        if sy_emu == ey_emu:
+            ey_emu += 1
+
+        conn = slide.shapes.add_connector(
+            MSO_CONNECTOR.STRAIGHT, sx_emu, sy_emu, ex_emu, ey_emu
+        )
+        conn.line.color.rgb = line_color
+        conn.line.width = line_w
+        if dashed:
+            conn.line.dash_style = MSO_LINE_DASH_STYLE.DASH
+
+        is_last = (i == len(points_in) - 2)
+        if is_last:
+            ln = conn._element.find(".//" + qn("a:ln"))
+            if ln is not None:
+                tail = etree.SubElement(ln, qn("a:tailEnd"))
+                tail.set("type", "triangle")
+                tail.set("w", "med")
+                tail.set("len", "med")
+
+        remove_style_element(conn._element)
+        _remove_shadow(conn)
+
+
+def _add_edge_label_at(slide, cx: float, cy: float, label: str) -> None:
+    """엣지 라벨을 (cx, cy) 중심으로 배치 (흰색 배경 + 슬레이트 텍스트)."""
+    if not label:
+        return
+    # 텍스트 길이에 따른 폭 추정 (한글 한 글자 약 0.13in, 기본 0.4in)
+    est_w = max(0.5, 0.08 * len(label) + 0.2)
+    est_h = 0.22
+    txb = slide.shapes.add_textbox(
+        Inches(cx - est_w / 2),
+        Inches(cy - est_h / 2),
+        Inches(est_w),
+        Inches(est_h),
+    )
+    # 배경 흰색 사각형 효과: textbox는 채우기가 없으므로 명시 부여
+    txb.fill.solid()
+    txb.fill.fore_color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+    txb.line.fill.background()
+    tf = txb.text_frame
+    tf.margin_left = Pt(2)
+    tf.margin_right = Pt(2)
+    tf.margin_top = Pt(0)
+    tf.margin_bottom = Pt(0)
+    tf.word_wrap = False
+    p = tf.paragraphs[0]
+    p.alignment = PP_ALIGN.CENTER
+    run = p.add_run()
+    run.text = label
+    run.font.size = Pt(8)
+    run.font.color.rgb = RGBColor(0x47, 0x55, 0x69)
+    try:
+        rPr = run._r.get_or_add_rPr()
+        ea = etree.SubElement(rPr, qn("a:ea"))
+        ea.set("typeface", "맑은 고딕")
+        latin = rPr.find(qn("a:latin"))
+        if latin is None:
+            latin = etree.SubElement(rPr, qn("a:latin"))
+        latin.set("typeface", "맑은 고딕")
+    except Exception:
+        pass
+
+
+def _render_pptx_from_layout(layout, title: str = "") -> bytes:
+    """layout_engine이 만든 LayoutResult를 PPTX 슬라이드로 렌더링한다."""
+    prs = Presentation()
+    prs.slide_width = Inches(SLIDE_W)
+    prs.slide_height = Inches(SLIDE_H)
+    blank_layout = prs.slide_layouts[6]
+    slide = prs.slides.add_slide(blank_layout)
+
+    _add_title_and_bg(slide, title)
+
+    # 콘텐츠 영역에 캔버스를 가운데 정렬 (오프셋)
+    avail_w = SLIDE_W - 2 * MARGIN
+    avail_h = SLIDE_H - TITLE_H - 2 * MARGIN
+    off_x = MARGIN + max(0.0, (avail_w - layout.canvas_w) / 2.0)
+    off_y = TITLE_H + MARGIN + max(0.0, (avail_h - layout.canvas_h) / 2.0)
+
+    # 1) 서브그래프 박스 (노드 뒤로)
+    cluster_idx_map: dict[str, int] = {}
+    for idx, cl in enumerate(layout.clusters):
+        cluster_idx_map[cl.id] = idx
+        fill_color = _SUBGRAPH_FILLS[idx % len(_SUBGRAPH_FILLS)]
+        _add_subgraph_box_at(
+            slide,
+            off_x + cl.x, off_y + cl.y, cl.w, cl.h,
+            cl.label, fill_color, idx,
+        )
+
+    # 2) 노드 (서브그래프 인덱스 기반 팔레트)
+    shape_map: dict[str, object] = {}
+    for node_idx, (nid, node) in enumerate(layout.nodes.items()):
+        if node.cluster_id and node.cluster_id in cluster_idx_map:
+            palette_idx = cluster_idx_map[node.cluster_id]
+        else:
+            palette_idx = node_idx
+        shape_map[nid] = _add_node_at(
+            slide,
+            off_x + node.x, off_y + node.y, node.w, node.h,
+            node.label, node.shape, palette_idx,
+        )
+
+    # 3) 엣지 (polyline 다중 connector)
+    for edge in layout.edges:
+        if edge.source not in shape_map or edge.target not in shape_map:
+            continue
+        pts = [(off_x + x, off_y + y) for (x, y) in edge.points]
+        _add_polyline_edge(slide, pts, dashed=edge.dashed)
+        if edge.label and edge.label_pos:
+            lx, ly = edge.label_pos
+            _add_edge_label_at(slide, off_x + lx, off_y + ly, edge.label)
+
     output = BytesIO()
     prs.save(output)
     output.seek(0)

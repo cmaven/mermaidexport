@@ -526,8 +526,24 @@ def _build_flowchart_xml(
     subgraphs: list[SubgraphDict],
     direction: str,
     title: str,
+    mermaid_code: str = "",
 ) -> str:
     """flowchart/graph 다이어그램 XML을 생성한다."""
+    # 새 레이아웃 엔진(mmdc SVG) 시도 — 성공 시 dagre 좌표 그대로 사용
+    if mermaid_code:
+        try:
+            from converters.layout_engine import compute_layout_via_mmdc
+            layout = compute_layout_via_mmdc(
+                mermaid_code,
+                target_w_in=13.0,
+                target_h_in=8.0,
+                puppeteer_config="/app/backend/puppeteer-config.json",
+            )
+        except Exception:
+            layout = None
+        if layout is not None and layout.nodes:
+            return _build_flowchart_xml_from_layout(layout, edges, title)
+
     next_id = _make_id_gen()
 
     # XML 트리 구성
@@ -777,6 +793,152 @@ def _serialize_xml(root_el: ET.Element) -> str:
 
 
 # ──────────────────────────────────────────────
+# mmdc SVG 기반 레이아웃 → draw.io XML (신규)
+# ──────────────────────────────────────────────
+
+# inch → draw.io 픽셀 환산 (1 inch = 96 px). 표준 CSS 픽셀과 일치.
+_INCH_TO_PX = 96.0
+_DRAWIO_PADDING = 20.0   # 페이지 좌상단 여백 (px)
+# swimlane 헤더 높이 (draw.io 기본 startSize=30)
+_SWIMLANE_HEADER_PX = 30.0
+
+
+def _build_flowchart_xml_from_layout(layout, edges: list, title: str) -> str:
+    """layout_engine 결과(LayoutResult)와 파싱된 edges를 받아 draw.io XML 생성.
+
+    - 노드 좌표/크기는 layout 결과 그대로 사용
+    - 서브그래프(클러스터)는 swimlane으로 렌더, 자식 노드는 상대좌표
+    - 엣지 라우팅은 draw.io의 orthogonalEdgeStyle에 위임
+    """
+    next_id = _make_id_gen()
+
+    mxfile = ET.Element("mxfile", host="drawio.py", version="21.0.0")
+    diagram = ET.SubElement(mxfile, "diagram", id="diagram-1", name=title or "Diagram")
+
+    page_w = int(layout.canvas_w * _INCH_TO_PX + _DRAWIO_PADDING * 2)
+    page_h = int(layout.canvas_h * _INCH_TO_PX + _DRAWIO_PADDING * 2)
+    mxgraph_model = ET.SubElement(
+        diagram, "mxGraphModel",
+        dx="1422", dy="762", grid="1", gridSize="10",
+        guides="1", tooltips="1", connect="1", arrows="1",
+        fold="1", page="1", pageScale="1",
+        pageWidth=str(max(page_w, 1200)),
+        pageHeight=str(max(page_h, 700)),
+        math="0", shadow="0",
+    )
+    root = ET.SubElement(mxgraph_model, "root")
+    _make_root_cells(root)
+
+    # 1) 클러스터(swimlane) 추가 + id 매핑
+    sg_cid_map: dict[str, str] = {}
+    sg_pos_map: dict[str, tuple[float, float]] = {}   # cluster_id → (abs_x_px, abs_y_px)
+    cluster_idx_map: dict[str, int] = {cl.id: i for i, cl in enumerate(layout.clusters)}
+
+    for idx, cl in enumerate(layout.clusters):
+        ax = _DRAWIO_PADDING + cl.x * _INCH_TO_PX
+        ay = _DRAWIO_PADDING + cl.y * _INCH_TO_PX
+        aw = cl.w * _INCH_TO_PX
+        ah = cl.h * _INCH_TO_PX
+        cid = next_id()
+        cell = ET.SubElement(
+            root, "mxCell",
+            id=cid, value=cl.label,
+            style=_subgraph_style_for_index(idx),
+            vertex="1", parent="1",
+        )
+        ET.SubElement(
+            cell, "mxGeometry",
+            x=f"{ax:.1f}", y=f"{ay:.1f}",
+            width=f"{aw:.1f}", height=f"{ah:.1f}",
+            **{"as": "geometry"},
+        )
+        sg_cid_map[cl.id] = cid
+        sg_pos_map[cl.id] = (ax, ay)
+
+    # 2) 노드 추가 (cluster_id 있으면 swimlane 자식 + 상대좌표)
+    node_cid_map: dict[str, str] = {}
+    node_idx_counter = 0
+    for nid, node in layout.nodes.items():
+        # 팔레트 인덱스: 클러스터 단위 우선
+        if node.cluster_id and node.cluster_id in cluster_idx_map:
+            palette_idx = cluster_idx_map[node.cluster_id]
+        else:
+            palette_idx = node_idx_counter
+        node_idx_counter += 1
+
+        style = _node_style_for_index(node.shape, palette_idx)
+        nw = node.w * _INCH_TO_PX
+        nh = node.h * _INCH_TO_PX
+
+        if node.cluster_id and node.cluster_id in sg_cid_map:
+            parent_cid = sg_cid_map[node.cluster_id]
+            sg_ax, sg_ay = sg_pos_map[node.cluster_id]
+            # swimlane 내부 상대좌표: header 영역 보정
+            abs_nx = _DRAWIO_PADDING + node.x * _INCH_TO_PX
+            abs_ny = _DRAWIO_PADDING + node.y * _INCH_TO_PX
+            rel_x = abs_nx - sg_ax
+            rel_y = abs_ny - sg_ay
+            # swimlane 자식은 헤더 아래 영역에 두는 게 시각적으로 자연스러움
+            # (이미 SVG 좌표가 헤더 안쪽이지만, 음수 되지 않게 보장)
+            rel_x = max(rel_x, 5.0)
+            rel_y = max(rel_y, _SWIMLANE_HEADER_PX + 5.0)
+            cid = next_id()
+            cell = ET.SubElement(
+                root, "mxCell",
+                id=cid, value=node.label, style=style,
+                vertex="1", parent=parent_cid,
+            )
+            ET.SubElement(
+                cell, "mxGeometry",
+                x=f"{rel_x:.1f}", y=f"{rel_y:.1f}",
+                width=f"{nw:.1f}", height=f"{nh:.1f}",
+                **{"as": "geometry"},
+            )
+        else:
+            ax = _DRAWIO_PADDING + node.x * _INCH_TO_PX
+            ay = _DRAWIO_PADDING + node.y * _INCH_TO_PX
+            cid = next_id()
+            cell = ET.SubElement(
+                root, "mxCell",
+                id=cid, value=node.label, style=style,
+                vertex="1", parent="1",
+            )
+            ET.SubElement(
+                cell, "mxGeometry",
+                x=f"{ax:.1f}", y=f"{ay:.1f}",
+                width=f"{nw:.1f}", height=f"{nh:.1f}",
+                **{"as": "geometry"},
+            )
+        node_cid_map[nid] = cid
+
+    # 3) 엣지: layout.edges가 있으면 그것을 우선, 없으면 인자로 받은 edges 사용.
+    #         라우팅은 draw.io에 위임 (orthogonalEdgeStyle).
+    if layout.edges:
+        for le in layout.edges:
+            src_cid = node_cid_map.get(le.source)
+            tgt_cid = node_cid_map.get(le.target)
+            if not src_cid or not tgt_cid:
+                continue
+            style = _STYLE_DASHED_EDGE if le.dashed else _STYLE_SOLID_EDGE
+            _add_edge_cell(
+                root, src_cid, tgt_cid, le.label, style,
+                parent="1", next_id=next_id,
+            )
+    else:
+        for edge in edges:
+            src_cid = node_cid_map.get(edge["source"])
+            tgt_cid = node_cid_map.get(edge["target"])
+            if not src_cid or not tgt_cid:
+                continue
+            _add_edge_cell(
+                root, src_cid, tgt_cid, edge["label"], _edge_style(edge["style"]),
+                parent="1", next_id=next_id,
+            )
+
+    return _serialize_xml(mxfile)
+
+
+# ──────────────────────────────────────────────
 # 공개 API
 # ──────────────────────────────────────────────
 
@@ -815,7 +977,7 @@ def mermaid_to_drawio(mermaid_code: str, title: str = "") -> str:
         nodes      = parse_mermaid_nodes(code)
         edges      = parse_mermaid_edges(code)
         subgraphs  = parse_mermaid_subgraphs(code)
-        return _build_flowchart_xml(nodes, edges, subgraphs, direction, title)
+        return _build_flowchart_xml(nodes, edges, subgraphs, direction, title, mermaid_code=code)
 
     # 기타 타입: 노드/엣지 파싱만 시도
     nodes     = parse_mermaid_nodes(code)
@@ -828,4 +990,4 @@ def mermaid_to_drawio(mermaid_code: str, title: str = "") -> str:
             f"{first_line!r}"
         )
 
-    return _build_flowchart_xml(nodes, edges, subgraphs, "TB", title)
+    return _build_flowchart_xml(nodes, edges, subgraphs, "TB", title, mermaid_code=code)
