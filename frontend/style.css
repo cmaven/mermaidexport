@@ -580,28 +580,107 @@ body {
   padding: 0 20px;
 }
 
+/* summary 기본 마커 제거 */
 .mermaid-source summary {
+  list-style: none;
   cursor: pointer;
-  font-size: 0.85rem;
-  color: var(--color-text-secondary);
-  padding: 10px 0;
   user-select: none;
-  list-style: disclosure-closed;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  padding: 10px 14px;
+  margin: 8px 0;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  transition:
+    background-color var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.mermaid-source summary::-webkit-details-marker {
+  display: none;
+}
+
+.mermaid-source summary:hover {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+  color: #1e293b;
 }
 
 .mermaid-source[open] summary {
-  list-style: disclosure-open;
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #1e3a8a;
+  border-radius: 8px 8px 0 0;
+  margin-bottom: 0;
 }
 
+/* caret 회전 애니메이션 */
+.mermaid-source summary .caret {
+  flex-shrink: 0;
+  transition: transform 0.2s ease;
+}
+
+.mermaid-source[open] summary .caret {
+  transform: rotate(90deg);
+}
+
+/* 코드 래퍼 (복사 버튼 + pre 묶음) */
+.mermaid-code-wrapper {
+  position: relative;
+  margin-bottom: 12px;
+}
+
+/* 복사 버튼 */
+.mermaid-copy-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--color-text-muted);
+  transition:
+    color var(--transition-fast),
+    border-color var(--transition-fast),
+    background-color var(--transition-fast);
+  z-index: 1;
+}
+
+.mermaid-copy-btn:hover {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+  background: var(--color-primary-light);
+}
+
+.mermaid-copy-btn.copied {
+  color: #10b981;
+  border-color: #10b981;
+  background: #ecfdf5;
+}
+
+/* F2: max-height 800px 으로 완화 */
 .mermaid-source pre {
   background: #f8fafc;
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  padding: 12px;
+  border-top: none;
+  border-radius: 0 0 8px 8px;
+  padding: 12px 44px 12px 12px;
   margin-top: 0;
-  margin-bottom: 12px;
-  overflow-x: auto;
-  max-height: 200px;
+  overflow: auto;
+  max-height: 800px;
   font-family: var(--font-mono);
   font-size: 0.8rem;
   color: #1e293b;

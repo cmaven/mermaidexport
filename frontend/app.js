@@ -291,15 +291,51 @@ function createDiagramCard(jobId, diagram, cardIndex) {
   if (diagram.mermaid_code) {
     const details = document.createElement('details');
     details.className = 'mermaid-source';
+
+    // summary: SVG caret + 텍스트
     const summary = document.createElement('summary');
-    summary.textContent = 'Mermaid 원본 보기';
+    summary.innerHTML = `
+      <svg class="caret" viewBox="0 0 12 12" width="12" height="12" fill="none"
+           stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <polyline points="4,2 9,6 4,10"/>
+      </svg>
+      <span>Mermaid 원본 보기</span>
+    `;
+
+    // 코드 래퍼 (복사 버튼 + pre)
+    const wrapper = document.createElement('div');
+    wrapper.className = 'mermaid-code-wrapper';
+
+    // 복사 버튼
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'mermaid-copy-btn';
+    copyBtn.type = 'button';
+    copyBtn.setAttribute('aria-label', '코드 복사');
+    copyBtn.innerHTML = `
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none"
+           stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+      </svg>
+    `;
+    copyBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      copyMermaidCode(copyBtn, diagram.mermaid_code);
+    });
+
     const pre = document.createElement('pre');
     const code = document.createElement('code');
     code.className = 'language-mermaid';
     code.textContent = diagram.mermaid_code;   // textContent로 자동 이스케이프
     pre.appendChild(code);
+
+    wrapper.appendChild(copyBtn);
+    wrapper.appendChild(pre);
     details.appendChild(summary);
-    details.appendChild(pre);
+    details.appendChild(wrapper);
     card.appendChild(details);
   }
 
@@ -395,6 +431,49 @@ function downloadCombinedPptx(jobId) {
 // ============================================================
 // 유틸리티
 // ============================================================
+
+/**
+ * Mermaid 코드를 클립보드에 복사하고 버튼에 체크 피드백을 줍니다.
+ * navigator.clipboard 미지원 환경에서는 execCommand 폴백을 사용합니다.
+ * @param {HTMLButtonElement} btn  - 복사 버튼 엘리먼트
+ * @param {string}            code - 복사할 코드 문자열
+ */
+function copyMermaidCode(btn, code) {
+  const originalHtml = btn.innerHTML;
+  const checkHtml = `
+    <svg viewBox="0 0 24 24" width="14" height="14" fill="none"
+         stroke="currentColor" stroke-width="2.5"
+         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <polyline points="20,6 9,17 4,12"/>
+    </svg>
+  `;
+
+  const applyFeedback = () => {
+    btn.innerHTML = checkHtml;
+    btn.classList.add('copied');
+    setTimeout(() => {
+      btn.innerHTML = originalHtml;
+      btn.classList.remove('copied');
+    }, 1500);
+  };
+
+  const fallbackCopy = () => {
+    const ta = document.createElement('textarea');
+    ta.value = code;
+    ta.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0;';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    try { document.execCommand('copy'); applyFeedback(); } catch (_) { /* 무시 */ }
+    document.body.removeChild(ta);
+  };
+
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(code).then(applyFeedback).catch(fallbackCopy);
+  } else {
+    fallbackCopy();
+  }
+}
 
 /**
  * HTML 특수문자를 이스케이프합니다 (XSS 방지).
