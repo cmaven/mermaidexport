@@ -2,13 +2,17 @@
 # pptx_shapes.py: Mermaid → 편집 가능한 PowerPoint 도형 변환기
 # 상세: Mermaid 코드를 파싱하여 네이티브 도형으로 구성된 PPTX 생성
 #       flowchart/graph 및 sequenceDiagram 지원
-# 생성일: 2026-04-07 | 수정일: 2026-04-07
+#       엣지는 mmdc SVG polyline 좌표 + 노드 회피 ELBOW 라우팅 적용
+# 생성일: 2026-04-07 | 수정일: 2026-05-18
 # ============================================================
 
+import logging
 import re
 from dataclasses import dataclass, field
 from io import BytesIO
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from pptx import Presentation
 from pptx.dml.color import RGBColor
@@ -1342,6 +1346,121 @@ def _add_node_at(
     return _add_rounded_rect(slide, x, y, w, h, fill_c, stroke_c, label, text_color=text_c)
 
 
+# ──────────────────────────────────────────────
+# 엣지 노드 회피 라우팅 (ELBOW + bbox 우회)
+# ──────────────────────────────────────────────
+
+def _lines_intersect(a, b) -> bool:
+    """두 선분 a, b 교차 검사. 표준 ccw 알고리즘."""
+    def ccw(p1, p2, p3):
+        return (p3[1] - p1[1]) * (p2[0] - p1[0]) > (p2[1] - p1[1]) * (p3[0] - p1[0])
+    (p1, p2), (p3, p4) = a, b
+    return ccw(p1, p3, p4) != ccw(p2, p3, p4) and ccw(p1, p2, p3) != ccw(p1, p2, p4)
+
+
+def _segment_crosses_bbox(seg, bbox, padding: float = 0.0) -> bool:
+    """선분이 bbox(padding 확장)와 교차하는지.
+    양 끝점이 bbox 안이거나 4변 중 하나와 교차하면 True."""
+    (x1, y1), (x2, y2) = seg
+    bx1, by1, bx2, by2 = bbox
+    bx1 -= padding
+    by1 -= padding
+    bx2 += padding
+    by2 += padding
+    # AABB 1차 필터링: 선분의 bbox가 노드 bbox와 분리되면 비교차
+    if max(x1, x2) < bx1 or min(x1, x2) > bx2:
+        return False
+    if max(y1, y2) < by1 or min(y1, y2) > by2:
+        return False
+    # 양 끝점 중 하나가 bbox 내부 → 교차 (경계 위 점은 통과로 인정 — strict)
+    inside1 = bx1 < x1 < bx2 and by1 < y1 < by2
+    inside2 = bx1 < x2 < bx2 and by1 < y2 < by2
+    if inside1 or inside2:
+        return True
+    # 4변과 교차 검사
+    edges = [
+        ((bx1, by1), (bx2, by1)),
+        ((bx2, by1), (bx2, by2)),
+        ((bx2, by2), (bx1, by2)),
+        ((bx1, by2), (bx1, by1)),
+    ]
+    return any(_lines_intersect(seg, edge) for edge in edges)
+
+
+def _segment_intersects_any(seg, bboxes, padding: float = 0.0) -> bool:
+    """선분이 bboxes 중 하나라도 교차하면 True."""
+    for bx in bboxes:
+        if _segment_crosses_bbox(seg, bx, padding):
+            return True
+    return False
+
+
+def _path_intersects_any(path, bboxes, padding: float = 0.0) -> bool:
+    """polyline path의 segment 중 하나라도 bboxes와 교차하면 True."""
+    for i in range(len(path) - 1):
+        seg = (path[i], path[i + 1])
+        if _segment_intersects_any(seg, bboxes, padding):
+            return True
+    return False
+
+
+def _make_elbow_candidates(s, e) -> list[list[tuple[float, float]]]:
+    """H→V→H, V→H→V 두 ELBOW 후보를 반환."""
+    sx, sy = s
+    ex, ey = e
+    mx, my = (sx + ex) / 2.0, (sy + ey) / 2.0
+    return [
+        [s, (mx, sy), (mx, ey), e],     # H→V→H
+        [s, (sx, my), (ex, my), e],     # V→H→V
+    ]
+
+
+def _try_corner_detour(s, e, bboxes, padding: float):
+    """각 bbox의 외곽 4모서리를 우회점 후보로 s→corner→e ELBOW 시도.
+    corner는 padding 2배 거리로 둬 검사 시 경계 교차로 오판정되지 않게 한다."""
+    detour_offset = padding * 2.0
+    for bx in bboxes:
+        x1, y1, x2, y2 = bx
+        corners = [
+            (x1 - detour_offset, y1 - detour_offset),
+            (x2 + detour_offset, y1 - detour_offset),
+            (x2 + detour_offset, y2 + detour_offset),
+            (x1 - detour_offset, y2 + detour_offset),
+        ]
+        for cx, cy in corners:
+            path = [s, (cx, s[1]), (cx, cy), (e[0], cy), e]
+            if not _path_intersects_any(path, bboxes, padding):
+                return path
+    return None
+
+
+def _route_around_nodes(start, end, avoid_bboxes, padding: float = 0.1):
+    """직선 start→end가 다른 노드 bbox(padding 포함)와 교차하면 ELBOW 회피 경로 반환.
+
+    Args:
+        start, end: (x, y) inches
+        avoid_bboxes: [(x1, y1, x2, y2), ...] inches, source/target 제외
+        padding: bbox 외곽 여유 (inches)
+
+    Returns:
+        polyline list[(x, y)] — 회피 필요 없으면 [start, end] 그대로
+    """
+    # 직선이 bbox 통과 없으면 그대로
+    if not _segment_intersects_any((start, end), avoid_bboxes, padding):
+        return [start, end]
+    # 1단계: ELBOW 두 후보
+    for path in _make_elbow_candidates(start, end):
+        if not _path_intersects_any(path, avoid_bboxes, padding):
+            return path
+    # 2단계: corner detour
+    detour = _try_corner_detour(start, end, avoid_bboxes, padding)
+    if detour:
+        return detour
+    # 3단계: fallback
+    logger.warning(f"화살표 회피 실패: start={start} end={end}")
+    return [start, end]
+
+
 def _add_polyline_edge(
     slide, points_in: list[tuple[float, float]],
     dashed: bool = False,
@@ -1469,11 +1588,37 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
             node.label, node.shape, palette_idx,
         )
 
-    # 3) 엣지 (polyline 다중 connector)
+    # 3) 엣지 (polyline 다중 connector) — 노드 회피 라우팅 적용
+    AVOID_PADDING = 0.1
     for edge in layout.edges:
         if edge.source not in shape_map or edge.target not in shape_map:
             continue
         pts = [(off_x + x, off_y + y) for (x, y) in edge.points]
+        if len(pts) < 2:
+            continue
+
+        # 회피 박스: source/target 외 모든 노드 (off_x/off_y 적용된 절대 좌표)
+        avoid = [
+            (off_x + n.x, off_y + n.y, off_x + n.x + n.w, off_y + n.y + n.h)
+            for nid, n in layout.nodes.items()
+            if nid not in (edge.source, edge.target)
+        ]
+
+        if len(pts) == 2:
+            # 단순 직선 → 전체 회피 라우팅
+            pts = _route_around_nodes(pts[0], pts[1], avoid, padding=AVOID_PADDING)
+        else:
+            # mmdc/dagre가 라우팅한 polyline → 교차하는 segment만 우회
+            new_pts = [pts[0]]
+            for i in range(len(pts) - 1):
+                seg = (pts[i], pts[i + 1])
+                if _segment_intersects_any(seg, avoid, AVOID_PADDING):
+                    routed = _route_around_nodes(pts[i], pts[i + 1], avoid, padding=AVOID_PADDING)
+                    new_pts.extend(routed[1:])  # 첫 점은 중복이므로 제외
+                else:
+                    new_pts.append(pts[i + 1])
+            pts = new_pts
+
         _add_polyline_edge(slide, pts, dashed=edge.dashed)
         if edge.label and edge.label_pos:
             lx, ly = edge.label_pos
