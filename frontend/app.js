@@ -300,7 +300,7 @@ function createDiagramCard(jobId, diagram, cardIndex) {
            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <polyline points="4,2 9,6 4,10"/>
       </svg>
-      <span>Mermaid 원본 보기</span>
+      <span>Mermaid 코드 보기</span>
     `;
 
     // 코드 래퍼 (복사 버튼 + pre)
