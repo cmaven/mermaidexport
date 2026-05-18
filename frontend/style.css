@@ -1,4 +1,4 @@
-/* style.css: Mermaid Web Converter 스타일 시트 | 생성일: 2026-04-07 | 수정일: 2026-05-18 */
+/* style.css: Mermaid Web Converter 스타일 시트 | 생성일: 2026-04-07 | 수정일: 2026-05-18 (G2/G3/G4/G5) */
 
 /* ============================================================
    CSS 변수 (디자인 토큰)
@@ -685,6 +685,270 @@ body {
   font-size: 0.8rem;
   color: #1e293b;
   line-height: 1.5;
+}
+
+/* ============================================================
+   Mermaid 그래프 인라인 렌더 토글 (G3+G4)
+   ============================================================ */
+.mermaid-graph {
+  width: 100%;
+  border-top: 1px solid var(--color-border);
+  padding: 0 20px;
+}
+
+.mermaid-graph summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  padding: 10px 14px;
+  margin: 8px 0;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 8px;
+  transition:
+    background-color var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.mermaid-graph summary::-webkit-details-marker {
+  display: none;
+}
+
+.mermaid-graph summary:hover {
+  background: #dcfce7;
+  border-color: #86efac;
+  color: #166534;
+}
+
+.mermaid-graph[open] summary {
+  background: #dcfce7;
+  border-color: #86efac;
+  color: #166534;
+  border-radius: 8px 8px 0 0;
+  margin-bottom: 0;
+}
+
+/* caret 회전 애니메이션 */
+.mermaid-graph summary .caret {
+  flex-shrink: 0;
+  transition: transform 0.2s ease;
+}
+
+.mermaid-graph[open] summary .caret {
+  transform: rotate(90deg);
+}
+
+/* 그래프 렌더 래퍼 */
+.mermaid-graph-wrapper {
+  position: relative;
+  padding: 16px 16px 12px;
+  background: #f8fafc;
+  border: 1px solid var(--color-border);
+  border-top: none;
+  border-radius: 0 0 8px 8px;
+  margin-bottom: 12px;
+}
+
+/* SVG 렌더 타겟 */
+.mermaid-render-target {
+  width: 100%;
+  min-height: 60px;
+  overflow: auto;
+}
+
+.mermaid-render-target svg {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+
+/* 크게 보기 버튼 (우하단) */
+.mermaid-fullscreen-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 10px;
+  padding: 5px 12px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font-family: var(--font-sans);
+  transition:
+    color var(--transition-fast),
+    border-color var(--transition-fast),
+    background-color var(--transition-fast);
+}
+
+.mermaid-fullscreen-btn:hover {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+  background: var(--color-primary-light);
+}
+
+.mermaid-fullscreen-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* 에러 박스 */
+.mermaid-error {
+  padding: 10px 14px;
+  background: var(--color-error-bg);
+  border: 1px solid var(--color-error-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-error);
+  font-size: 13px;
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* 로딩 상태 */
+.mermaid-loading {
+  color: var(--color-text-muted);
+  font-size: 13px;
+  padding: 8px 0;
+}
+
+/* ============================================================
+   Mermaid 풀스크린 모달 (G5)
+   ============================================================ */
+.mermaid-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mermaid-modal[hidden] {
+  display: none !important;
+}
+
+.mermaid-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.72);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  cursor: pointer;
+}
+
+.mermaid-modal-content {
+  position: relative;
+  z-index: 1;
+  width: 95vw;
+  height: 92vh;
+  background: var(--color-surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: fadeUp 200ms both;
+}
+
+.mermaid-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+  gap: 12px;
+}
+
+.mermaid-modal-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  letter-spacing: -0.2px;
+}
+
+.mermaid-modal-close {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: 20px;
+  line-height: 1;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    color var(--transition-fast),
+    border-color var(--transition-fast),
+    background-color var(--transition-fast);
+}
+
+.mermaid-modal-close:hover {
+  color: var(--color-error);
+  border-color: var(--color-error-border);
+  background: var(--color-error-bg);
+}
+
+.mermaid-modal-body {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+  background: #f1f5f9;
+}
+
+.mermaid-modal-footer {
+  padding: 8px 20px;
+  border-top: 1px solid var(--color-border);
+  flex-shrink: 0;
+  background: var(--color-surface);
+}
+
+.mermaid-modal-hint {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+/* pan/zoom 컨테이너 */
+.mermaid-pan-zoom {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  cursor: grab;
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+}
+
+.mermaid-pan-zoom-content {
+  display: inline-block;
+  transform-origin: 0 0;
+  user-select: none;
+  padding: 24px;
+}
+
+.mermaid-pan-zoom-content svg {
+  display: block;
+  max-width: none;
+  height: auto;
 }
 
 /* ============================================================

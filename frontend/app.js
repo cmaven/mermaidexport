@@ -1,6 +1,7 @@
 /**
  * app.js: Mermaid Web Converter 클라이언트 로직
  * 상세: 파일 업로드, 변환 API 호출, 결과 렌더링, 다운로드 처리
+ *       G2: 코드 토글 라벨 변경, G3+G4: 그래프 인라인 렌더, G5: 풀스크린 모달
  * 생성일: 2026-04-07 | 수정일: 2026-05-18
  */
 
@@ -337,6 +338,47 @@ function createDiagramCard(jobId, diagram, cardIndex) {
     details.appendChild(summary);
     details.appendChild(wrapper);
     card.appendChild(details);
+
+    // 그래프 토글 (G3+G4: Mermaid 원본 보기 — SVG 인라인 렌더)
+    const graphDetails = document.createElement('details');
+    graphDetails.className = 'mermaid-graph';
+
+    const graphSummary = document.createElement('summary');
+    graphSummary.innerHTML = `<svg class="caret" viewBox="0 0 12 12" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 3l4 3-4 3" /></svg><span>Mermaid 원본 보기</span>`;
+
+    const graphWrapper = document.createElement('div');
+    graphWrapper.className = 'mermaid-graph-wrapper';
+    graphWrapper.innerHTML = `<div class="mermaid-render-target"></div><button class="mermaid-fullscreen-btn" type="button" aria-label="크게 보기"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 8V3h5M17 8V3h-5M3 12v5h5M17 12v5h-5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>크게 보기</span></button>`;
+
+    graphDetails.appendChild(graphSummary);
+    graphDetails.appendChild(graphWrapper);
+
+    // lazy 렌더: 토글 열 때 최초 1회만 렌더링
+    graphDetails.addEventListener('toggle', async () => {
+      if (graphDetails.open && !graphDetails.dataset.rendered) {
+        const target = graphWrapper.querySelector('.mermaid-render-target');
+        target.innerHTML = '<div class="mermaid-loading">렌더링 중...</div>';
+        try {
+          if (!window.__mermaid) throw new Error('Mermaid 라이브러리를 불러올 수 없습니다');
+          const renderId = `mmd-${jobId}-${idx}-${Date.now()}`;
+          const { svg } = await window.__mermaid.render(renderId, diagram.mermaid_code);
+          target.innerHTML = svg;
+          graphDetails.dataset.rendered = '1';
+        } catch (err) {
+          target.innerHTML = `<div class="mermaid-error">Mermaid 렌더 오류: ${escapeHtml(err.message || String(err))}</div>`;
+        }
+      }
+    });
+
+    // 크게 보기 버튼 → 모달 오픈
+    const fullscreenBtn = graphWrapper.querySelector('.mermaid-fullscreen-btn');
+    fullscreenBtn.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openMermaidModal(diagram.mermaid_code, diagram.title);
+    };
+
+    card.appendChild(graphDetails);
   }
 
   card.appendChild(preview);
@@ -486,6 +528,140 @@ function escapeHtml(str) {
 }
 
 // ============================================================
+// Mermaid 풀스크린 모달 (G5)
+// ============================================================
+
+/**
+ * pan/zoom 상태를 초기화하고 마우스 휠 줌 + 드래그 pan을 설정합니다.
+ * @param {HTMLElement} container - overflow:hidden 래퍼
+ * @param {HTMLElement} content   - 이동/확대 대상 (SVG 컨테이너)
+ */
+function initPanZoom(container, content) {
+  let scale = 1;
+  let translateX = 0;
+  let translateY = 0;
+  let isDragging = false;
+  let startX = 0;
+  let startY = 0;
+
+  function applyTransform() {
+    content.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scale})`;
+    content.style.transformOrigin = '0 0';
+  }
+
+  // 휠 줌 — 마우스 커서 위치 기준 (scale 범위: 0.2 ~ 5x)
+  container.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const rect = container.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+
+    const delta = e.deltaY > 0 ? 0.85 : 1.18;
+    const newScale = Math.min(5, Math.max(0.2, scale * delta));
+
+    translateX = mouseX - (mouseX - translateX) * (newScale / scale);
+    translateY = mouseY - (mouseY - translateY) * (newScale / scale);
+    scale = newScale;
+
+    applyTransform();
+  }, { passive: false });
+
+  // 드래그 pan — mousedown/mousemove/mouseup
+  container.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    isDragging = true;
+    startX = e.clientX - translateX;
+    startY = e.clientY - translateY;
+    container.style.cursor = 'grabbing';
+    e.preventDefault();
+  });
+
+  // mousemove / mouseup 은 window 에 등록해 빠른 드래그에도 대응
+  const onMouseMove = (e) => {
+    if (!isDragging) return;
+    translateX = e.clientX - startX;
+    translateY = e.clientY - startY;
+    applyTransform();
+  };
+
+  const onMouseUp = () => {
+    if (!isDragging) return;
+    isDragging = false;
+    container.style.cursor = 'grab';
+  };
+
+  window.addEventListener('mousemove', onMouseMove);
+  window.addEventListener('mouseup',   onMouseUp);
+
+  // 모달 닫힐 때 이벤트 정리용 cleanup 반환
+  return () => {
+    window.removeEventListener('mousemove', onMouseMove);
+    window.removeEventListener('mouseup',   onMouseUp);
+  };
+}
+
+/** 현재 pan/zoom cleanup 함수 (모달 닫힐 때 호출) */
+let _panZoomCleanup = null;
+
+/**
+ * Mermaid 다이어그램 풀스크린 모달을 엽니다.
+ * @param {string} mermaidCode - 렌더링할 Mermaid 코드
+ * @param {string} [title]     - 모달 제목 (없으면 기본값)
+ */
+async function openMermaidModal(mermaidCode, title) {
+  const modal      = document.getElementById('mermaidModal');
+  const modalBody  = document.getElementById('mermaidModalBody');
+  const modalTitle = document.getElementById('mermaidModalTitle');
+  if (!modal) return;
+
+  // 이전 cleanup
+  if (_panZoomCleanup) { _panZoomCleanup(); _panZoomCleanup = null; }
+
+  modalTitle.textContent = title || 'Mermaid 다이어그램';
+  modalBody.innerHTML    = '<div class="mermaid-loading" style="padding:40px;text-align:center;">렌더링 중...</div>';
+
+  modal.hidden = false;
+  modal.setAttribute('aria-hidden', 'false');
+
+  try {
+    if (!window.__mermaid) throw new Error('Mermaid 라이브러리를 불러올 수 없습니다');
+    const renderId = `mmd-modal-${Date.now()}`;
+    const { svg }  = await window.__mermaid.render(renderId, mermaidCode);
+
+    // pan/zoom 래퍼 생성
+    const panZoomWrapper = document.createElement('div');
+    panZoomWrapper.className = 'mermaid-pan-zoom';
+
+    const svgContainer = document.createElement('div');
+    svgContainer.className = 'mermaid-pan-zoom-content';
+    svgContainer.innerHTML = svg;
+
+    panZoomWrapper.appendChild(svgContainer);
+    modalBody.innerHTML = '';
+    modalBody.appendChild(panZoomWrapper);
+
+    _panZoomCleanup = initPanZoom(panZoomWrapper, svgContainer);
+  } catch (err) {
+    modalBody.innerHTML = `<div class="mermaid-error" style="margin:20px;">Mermaid 렌더 오류: ${escapeHtml(err.message || String(err))}</div>`;
+  }
+}
+
+/**
+ * Mermaid 풀스크린 모달을 닫고 내용을 초기화합니다.
+ */
+function closeMermaidModal() {
+  const modal     = document.getElementById('mermaidModal');
+  const modalBody = document.getElementById('mermaidModalBody');
+  if (!modal) return;
+
+  if (_panZoomCleanup) { _panZoomCleanup(); _panZoomCleanup = null; }
+
+  modal.hidden = true;
+  modal.setAttribute('aria-hidden', 'true');
+  if (modalBody) modalBody.innerHTML = '';
+}
+
+// ============================================================
 // 드래그 앤 드롭 이벤트 핸들러
 // ============================================================
 
@@ -604,3 +780,22 @@ btnDownloadAll.addEventListener('click', () => {
 
 document.addEventListener('dragover', (e) => e.preventDefault());
 document.addEventListener('drop',     (e) => e.preventDefault());
+
+// ============================================================
+// Mermaid 모달 이벤트 (클릭 위임 + ESC 키)
+// ============================================================
+
+// data-close="1" 요소 클릭 시 모달 닫기 (backdrop, × 버튼 공통)
+document.addEventListener('click', (e) => {
+  if (e.target.closest('[data-close="1"]')) {
+    closeMermaidModal();
+  }
+});
+
+// ESC 키로 모달 닫기
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    const modal = document.getElementById('mermaidModal');
+    if (modal && !modal.hidden) closeMermaidModal();
+  }
+});

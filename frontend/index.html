@@ -1,4 +1,4 @@
-<!-- index.html: Mermaid Web Converter 단일 페이지 애플리케이션 | 생성일: 2026-04-07 -->
+<!-- index.html: Mermaid Web Converter 단일 페이지 애플리케이션 | 생성일: 2026-04-07 | 수정일: 2026-05-18 -->
 <!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -121,6 +121,41 @@
       <p>Mermaid Web Converter &mdash; Mermaid 다이어그램을 PNG, Draw.io, Excalidraw, PPTX로 변환</p>
     </div>
   </footer>
+
+  <!-- Mermaid@11 CDN (G3+G4: 인라인 그래프 렌더, G5: 모달 렌더) -->
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: 'base',
+      themeVariables: {
+        fontFamily: 'NanumSquare, Inter, sans-serif',
+        fontSize: '14px',
+        primaryColor: '#dbeafe',
+        primaryBorderColor: '#3b82f6',
+        lineColor: '#475569',
+        clusterBkg: '#fafafa',
+        clusterBorder: '#94a3b8',
+      },
+      securityLevel: 'loose',
+    });
+    window.__mermaid = mermaid;
+  </script>
+
+  <!-- 풀스크린 모달 (G5) -->
+  <div class="mermaid-modal" id="mermaidModal" hidden aria-hidden="true" role="dialog" aria-labelledby="mermaidModalTitle">
+    <div class="mermaid-modal-backdrop" data-close="1"></div>
+    <div class="mermaid-modal-content">
+      <div class="mermaid-modal-header">
+        <h3 class="mermaid-modal-title" id="mermaidModalTitle">Mermaid 다이어그램</h3>
+        <button class="mermaid-modal-close" type="button" aria-label="닫기" data-close="1">×</button>
+      </div>
+      <div class="mermaid-modal-body" id="mermaidModalBody"></div>
+      <div class="mermaid-modal-footer">
+        <span class="mermaid-modal-hint">마우스 휠: 확대/축소 · 드래그: 이동 · ESC: 닫기</span>
+      </div>
+    </div>
+  </div>
 
   <script src="app.js"></script>
 </body>
