@@ -4,6 +4,7 @@
 #       절대 좌표를 파싱하여 inches 단위 LayoutResult를 반환.
 #       PPTX/Draw.io 변환기가 이 결과를 받아 dagre 품질의 레이아웃을
 #       그대로 재현한다. 실패 시 None 반환 → 호출자가 기존 그리드 폴백.
+#       erDiagram도 지원 — 엔티티 박스/Attribute 행/관계 cardinality 추출.
 # 생성일: 2026-05-18 | 수정일: 2026-05-18
 # ============================================================
 
@@ -85,6 +86,29 @@ _NODE_ID_RE = re.compile(r"flowchart-(.+?)-\d+$")
 _EDGE_ID_RE = re.compile(r"L_(.+?)_(.+?)_\d+$")
 # SVG prefix (mmdc는 첫 g 안에 모든 노드 id를 'my-svg-' 접두사로 생성)
 _CLUSTER_ID_PREFIX_RE = re.compile(r"^[A-Za-z][\w-]*?-(.+)$")
+
+# ER 다이어그램: 엔티티 노드 id 패턴 — entity-{ENTITY_NAME}-{idx}
+_ER_NODE_ID_RE = re.compile(r"^entity-(.+?)-\d+$")
+# ER 다이어그램: 엣지 id 패턴 — id_entity-{SRC}-X_entity-{DST}-Y_{seq}
+_ER_EDGE_ID_RE = re.compile(r"^id_entity-(.+?)-\d+_entity-(.+?)-\d+_\d+$")
+# ER 노드 외곽 박스를 그리는 path의 첫 M 절대좌표 추출용 (entityBox path)
+_ER_PATH_BBOX_RE = re.compile(
+    r"^\s*M\s*([-\d.]+)\s+([-\d.]+)\s+L\s*([-\d.]+)\s+([-\d.]+)\s+"
+    r"L\s*([-\d.]+)\s+([-\d.]+)\s+L\s*([-\d.]+)\s+([-\d.]+)"
+)
+# ER marker URL → cardinality 문자열 매핑
+# (mermaid ER 문법: ||--o{ 처럼 source/target 각각 두 글자)
+_ER_MARKER_TO_CARDINALITY = {
+    "er-onlyOneStart": "||",
+    "er-onlyOneEnd": "||",
+    "er-zeroOrMoreStart": "}o",
+    "er-zeroOrMoreEnd": "o{",
+    "er-oneOrMoreStart": "}|",
+    "er-oneOrMoreEnd": "|{",
+    "er-zeroOrOneStart": "|o",
+    "er-zeroOrOneEnd": "o|",
+}
+_ER_MARKER_URL_RE = re.compile(r"#[^_]*_?(er-\w+)\)")
 
 
 # ──────────────────────────────────────────────
@@ -472,6 +496,256 @@ def _parse_edges(
     return edges
 
 
+# ──────────────────────────────────────────────
+# ER 다이어그램 전용 파싱 로직 (Phase 2)
+# ──────────────────────────────────────────────
+
+def _is_er_svg(root: etree._Element, mermaid_code: str) -> bool:
+    """SVG root class 또는 mermaid 코드 첫 줄로 ER 여부 판정."""
+    cls = (root.get("class") or "").lower()
+    if "erdiagram" in cls.replace(" ", ""):
+        return True
+    if mermaid_code:
+        first = mermaid_code.strip().split("\n", 1)[0].strip().lower().replace(" ", "")
+        if first.startswith("erdiagram"):
+            return True
+    return False
+
+
+def _marker_url_to_cardinality(marker_url: str) -> str:
+    """marker-start/marker-end 의 url() 문자열에서 cardinality 토큰 추출.
+
+    예: 'url(#my-svg_er-onlyOneStart)' → '||'
+    매칭 실패 또는 빈 입력이면 ''.
+    """
+    if not marker_url:
+        return ""
+    m = _ER_MARKER_URL_RE.search(marker_url)
+    if not m:
+        return ""
+    return _ER_MARKER_TO_CARDINALITY.get(m.group(1), "")
+
+
+def _er_node_text_from_label(label_g: etree._Element) -> str:
+    """label g 안의 foreignObject 텍스트만 추출 (속성 행/이름 모두 공통)."""
+    fo = label_g.find(f"{_SVG}foreignObject")
+    if fo is None:
+        return ""
+    return _extract_text_from_foreign(fo)
+
+
+def _er_node_bbox(g: etree._Element) -> tuple[float, float]:
+    """엔티티 노드의 (width, height)를 SVG-local 좌표로 반환.
+
+    두 가지 케이스:
+    1) 속성 없는 엔티티: <rect class="basic label-container" width=.. height=..>
+    2) 속성 있는 엔티티: 외곽 path의 M -W -H L W -H L W H L -W H 좌표에서 추출
+    """
+    # case 1: rect 기반
+    rect = g.find(f"{_SVG}rect")
+    if rect is not None:
+        try:
+            w = float(rect.get("width", "0"))
+            h = float(rect.get("height", "0"))
+            if w > 0 and h > 0:
+                return w, h
+        except ValueError:
+            pass
+
+    # case 2: 첫 자식 g의 첫 path의 d 속성에서 4-corner 추출
+    for child in g.iter(f"{_SVG}path"):
+        d = child.get("d") or ""
+        m = _ER_PATH_BBOX_RE.match(d)
+        if not m:
+            continue
+        try:
+            xs = [float(m.group(i)) for i in (1, 3, 5, 7)]
+            ys = [float(m.group(i)) for i in (2, 4, 6, 8)]
+        except ValueError:
+            continue
+        w = max(xs) - min(xs)
+        h = max(ys) - min(ys)
+        if w > 0 and h > 0:
+            return w, h
+    return 0.0, 0.0
+
+
+def _parse_er_nodes(
+    root: etree._Element,
+    scale: float,
+) -> dict[str, LaidNode]:
+    """ER 엔티티 노드를 파싱해 {엔티티명: LaidNode} 반환.
+
+    엔티티명을 ID로 사용한다 (mermaid ER에서는 엔티티명이 곧 식별자).
+    label은 '엔티티이름\\n타입 이름\\n타입 이름...' 형태의 멀티라인 문자열.
+    """
+    nodes: dict[str, LaidNode] = {}
+    for g in root.iter(f"{_SVG}g"):
+        cls = g.get("class") or ""
+        if "node" not in cls.split():
+            continue
+        svg_id = g.get("id") or ""
+        m = _ER_NODE_ID_RE.match(svg_id)
+        if not m:
+            continue
+        entity_name = m.group(1)
+
+        # transform translate(cx, cy) — 중심 좌표
+        cx, cy = _parse_translate(g.get("transform") or "")
+
+        # 박스 크기 (rect 또는 path 기반)
+        w_px, h_px = _er_node_bbox(g)
+        if w_px <= 0 or h_px <= 0:
+            continue
+
+        # label name g — 엔티티 이름. 없으면 자식 g.label 의 foreignObject 사용.
+        name_text = ""
+        for child in g.iter(f"{_SVG}g"):
+            child_cls = (child.get("class") or "").strip()
+            if child_cls == "label name":
+                name_text = _er_node_text_from_label(child)
+                break
+        if not name_text:
+            # 속성 없는 엔티티: <g class="label"> 안의 foreignObject
+            for child in g.iter(f"{_SVG}g"):
+                child_cls = (child.get("class") or "").strip()
+                if child_cls == "label":
+                    name_text = _er_node_text_from_label(child)
+                    if name_text:
+                        break
+
+        # Attribute 행 수집: 동일 transform y 값별로 (type, name, keys, comment) 4-튜플
+        # 키: y(소수점 3자리 라운드), 값: dict[ "type"/"name"/"keys"/"comment" ] = text
+        rows: dict[float, dict[str, str]] = {}
+        for child in g.iter(f"{_SVG}g"):
+            child_cls = (child.get("class") or "").strip()
+            if not child_cls.startswith("label attribute-"):
+                continue
+            kind = child_cls.split("attribute-", 1)[1].strip()
+            _, ty = _parse_translate(child.get("transform") or "")
+            key = round(ty, 3)
+            text = _er_node_text_from_label(child)
+            row = rows.setdefault(key, {})
+            row[kind] = text
+
+        # y 오름차순으로 정렬해 한 줄씩 합치기 (빈 문자열 제외)
+        attr_lines: list[str] = []
+        for y_key in sorted(rows.keys()):
+            row = rows[y_key]
+            cells = [
+                row.get("type", "").strip(),
+                row.get("name", "").strip(),
+                row.get("keys", "").strip(),
+                row.get("comment", "").strip(),
+            ]
+            cells = [c for c in cells if c]
+            if cells:
+                attr_lines.append(" ".join(cells))
+
+        label_parts: list[str] = []
+        if name_text:
+            label_parts.append(name_text)
+        else:
+            label_parts.append(entity_name)
+        label_parts.extend(attr_lines)
+        label = "\n".join(label_parts)
+
+        # 좌상단 좌표 (cx, cy는 중심)
+        x_tl = (cx - w_px / 2) * scale
+        y_tl = (cy - h_px / 2) * scale
+
+        nodes[entity_name] = LaidNode(
+            id=entity_name,
+            label=label,
+            x=x_tl,
+            y=y_tl,
+            w=w_px * scale,
+            h=h_px * scale,
+            shape="rect",
+        )
+    return nodes
+
+
+def _parse_er_edges(
+    root: etree._Element,
+    scale: float,
+    min_seg_in: float,
+) -> list[LaidEdge]:
+    """ER 관계(relationshipLine) 파싱.
+
+    cardinality는 marker-start/marker-end 의 url id에서 추출해
+    label 앞에 'src..tgt ' 형태로 부착.
+    edge label은 flowchart와 동일한 edgeLabel g 구조를 재사용.
+    """
+    edges: list[LaidEdge] = []
+
+    # edgeLabel data-id → (cx, cy) / 텍스트 매핑 (flowchart 와 동일 구조)
+    label_centers: dict[str, tuple[float, float]] = {}
+    label_texts: dict[str, str] = {}
+    for elg in root.iter(f"{_SVG}g"):
+        if (elg.get("class") or "") != "edgeLabel":
+            continue
+        cx, cy = _parse_translate(elg.get("transform") or "")
+        inner = elg.find(f"{_SVG}g")
+        data_id = inner.get("data-id") if inner is not None else None
+        if not data_id:
+            continue
+        label_centers[data_id] = (cx * scale, cy * scale)
+        fo = elg.find(f".//{_SVG}foreignObject")
+        if fo is not None:
+            label_texts[data_id] = _extract_text_from_foreign(fo)
+
+    for path in root.iter(f"{_SVG}path"):
+        cls = path.get("class") or ""
+        if "relationshipLine" not in cls:
+            continue
+        svg_id = path.get("id") or ""
+        m = _ER_EDGE_ID_RE.match(svg_id)
+        if not m:
+            continue
+        src, dst = m.group(1), m.group(2)
+
+        edge_data_id = path.get("data-id") or svg_id
+
+        # 좌표 시퀀스
+        b64 = path.get("data-points") or ""
+        pts_px = _decode_data_points(b64)
+        if not pts_px:
+            pts_px = _parse_path_d_fallback(path.get("d") or "")
+        if not pts_px:
+            continue
+
+        pts_in = [(x * scale, y * scale) for x, y in pts_px]
+        pts_in = _simplify_polyline(pts_in, min_seg_in)
+
+        # cardinality 토큰
+        src_card = _marker_url_to_cardinality(path.get("marker-start") or "")
+        tgt_card = _marker_url_to_cardinality(path.get("marker-end") or "")
+        body_text = label_texts.get(edge_data_id, "")
+
+        # label 조립: 'src_card..tgt_card body' (양쪽 모두 있을 때) 또는 부분만
+        card_token = ""
+        if src_card or tgt_card:
+            card_token = f"{src_card}..{tgt_card}".strip(".")
+        label_parts = [p for p in (card_token, body_text) if p]
+        label = " ".join(label_parts)
+
+        label_pos = label_centers.get(edge_data_id)
+        dashed = ("edge-pattern-dashed" in cls) or ("edge-pattern-dotted" in cls)
+
+        edges.append(
+            LaidEdge(
+                source=src,
+                target=dst,
+                label=label,
+                points=pts_in,
+                label_pos=label_pos,
+                dashed=dashed,
+            )
+        )
+    return edges
+
+
 def _assign_clusters_to_nodes(
     nodes: dict[str, LaidNode],
     clusters: list[LaidCluster],
@@ -523,10 +797,14 @@ def compute_layout_via_mmdc(
     if not mermaid_code or not mermaid_code.strip():
         return None
 
-    # sequenceDiagram 등 비 flowchart는 다른 SVG 구조 → 새 엔진 미적용
+    # sequenceDiagram 등 비 flowchart/ER는 다른 SVG 구조 → 새 엔진 미적용
     first_line = mermaid_code.strip().split("\n", 1)[0].strip().lower()
     compact = first_line.replace(" ", "")
-    if not (compact.startswith("flowchart") or compact.startswith("graph")):
+    if not (
+        compact.startswith("flowchart")
+        or compact.startswith("graph")
+        or compact.startswith("erdiagram")
+    ):
         return None
 
     if not _check_mmdc():
@@ -562,6 +840,23 @@ def compute_layout_via_mmdc(
             root_id = root.get("id") or ""
             root_prefix = f"{root_id}-" if root_id else ""
 
+            # ER 다이어그램 분기: 전용 파서 호출 (cluster 개념 없음)
+            if _is_er_svg(root, mermaid_code):
+                nodes_map = _parse_er_nodes(root, scale)
+                edges = _parse_er_edges(root, scale, min_seg_in=min_segment_in)
+                if not nodes_map:
+                    logger.warning("ER SVG에서 엔티티를 찾지 못함")
+                    return None
+                return LayoutResult(
+                    nodes=nodes_map,
+                    clusters=[],
+                    edges=edges,
+                    canvas_w=svg_w_px * scale,
+                    canvas_h=svg_h_px * scale,
+                    scale=scale,
+                )
+
+            # flowchart / graph: 기존 경로
             clusters_map = _parse_clusters(root, scale, root_prefix=root_prefix)
             nodes_map = _parse_nodes(root, scale)
             edges = _parse_edges(

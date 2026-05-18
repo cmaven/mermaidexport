@@ -1,9 +1,10 @@
 # ============================================================
 # drawio.py: Mermaid → draw.io (mxGraph XML) 범용 변환기
 # 상세: Mermaid 코드를 파싱하여 draw.io에서 편집 가능한 XML 생성
-# 생성일: 2026-04-07 | 수정일: 2026-04-07
+# 생성일: 2026-04-07 | 수정일: 2026-05-18
 # ============================================================
 
+import base64
 import re
 import xml.etree.ElementTree as ET
 from typing import TypedDict
@@ -939,6 +940,128 @@ def _build_flowchart_xml_from_layout(layout, edges: list, title: str) -> str:
 
 
 # ──────────────────────────────────────────────
+# ER 다이어그램 전용 빌더 (layout 경로 + PNG 폴백)
+# ──────────────────────────────────────────────
+
+def _build_er_xml_from_layout(layout, title: str) -> str:
+    """ER 다이어그램 LayoutResult → draw.io XML.
+
+    클러스터(subgraph) 없음. 노드 label의 \\n을 <br>로 치환하여
+    html=1 draw.io 셀에서 멀티라인 attribute 행이 표시되도록 한다.
+    """
+    next_id = _make_id_gen()
+
+    mxfile = ET.Element("mxfile", host="drawio.py", version="21.0.0")
+    diagram = ET.SubElement(mxfile, "diagram", id="diagram-1", name=title or "ER Diagram")
+
+    page_w = int(layout.canvas_w * _INCH_TO_PX + _DRAWIO_PADDING * 2)
+    page_h = int(layout.canvas_h * _INCH_TO_PX + _DRAWIO_PADDING * 2)
+    mxgraph_model = ET.SubElement(
+        diagram, "mxGraphModel",
+        dx="1422", dy="762", grid="1", gridSize="10",
+        guides="1", tooltips="1", connect="1", arrows="1",
+        fold="1", page="1", pageScale="1",
+        pageWidth=str(max(page_w, 1200)),
+        pageHeight=str(max(page_h, 700)),
+        math="0", shadow="0",
+    )
+    root = ET.SubElement(mxgraph_model, "root")
+    _make_root_cells(root)
+
+    # 노드 추가 (ER에는 cluster 없음 → 모두 parent="1")
+    node_cid_map: dict[str, str] = {}
+    for idx, (nid, node) in enumerate(layout.nodes.items()):
+        # ER 노드 스타일: 기본 팔레트 + 멀티라인 상단 정렬
+        style = _node_style_for_index(node.shape, idx)
+        style += "verticalAlign=top;align=left;"
+
+        ax = _DRAWIO_PADDING + node.x * _INCH_TO_PX
+        ay = _DRAWIO_PADDING + node.y * _INCH_TO_PX
+        nw = node.w * _INCH_TO_PX
+        nh = node.h * _INCH_TO_PX
+
+        cid = next_id()
+        cell = ET.SubElement(
+            root, "mxCell",
+            id=cid,
+            value=node.label.replace('\n', '<br>'),   # html=1 환경에서 줄바꿈
+            style=style,
+            vertex="1", parent="1",
+        )
+        ET.SubElement(
+            cell, "mxGeometry",
+            x=f"{ax:.1f}", y=f"{ay:.1f}",
+            width=f"{nw:.1f}", height=f"{nh:.1f}",
+            **{"as": "geometry"},
+        )
+        node_cid_map[nid] = cid
+
+    # 엣지 추가 (cardinality 정보는 le.label에 이미 포함)
+    for le in layout.edges:
+        src_cid = node_cid_map.get(le.source)
+        tgt_cid = node_cid_map.get(le.target)
+        if not src_cid or not tgt_cid:
+            continue
+        edge_style = _STYLE_DASHED_EDGE if le.dashed else _STYLE_SOLID_EDGE
+        _add_edge_cell(
+            root, src_cid, tgt_cid, le.label, edge_style,
+            parent="1", next_id=next_id,
+        )
+
+    return _serialize_xml(mxfile)
+
+
+def _build_png_embed_xml(mermaid_code: str, title: str) -> str:
+    """mmdc PNG를 base64 임베드한 단일 이미지 셀 draw.io XML 반환.
+
+    ER SVG 파싱이 실패(노드 0개 또는 예외)할 때 사용하는 폴백 경로.
+    draw.io에서 편집은 불가하나 시각 정확성은 mmdc 렌더와 동일.
+    """
+    from converters.png import _png_via_mmdc  # 지연 임포트 (순환 방지)
+    try:
+        png_bytes = _png_via_mmdc(mermaid_code)
+    except Exception as exc:
+        raise ValueError(
+            f"ER 다이어그램 draw.io 변환 실패 (layout 파싱 + PNG 폴백 모두 실패): {exc}"
+        ) from exc
+
+    b64 = base64.b64encode(png_bytes).decode("ascii")
+
+    next_id = _make_id_gen()
+    mxfile = ET.Element("mxfile", host="drawio.py", version="21.0.0")
+    diagram = ET.SubElement(mxfile, "diagram", id="diagram-1", name=title or "ER Diagram")
+    mxgraph_model = ET.SubElement(
+        diagram, "mxGraphModel",
+        dx="1422", dy="762", grid="1", gridSize="10",
+        guides="1", tooltips="1", connect="1", arrows="1",
+        fold="1", page="1", pageScale="1",
+        pageWidth="1600", pageHeight="900",
+        math="0", shadow="0",
+    )
+    root_el = ET.SubElement(mxgraph_model, "root")
+    _make_root_cells(root_el)
+
+    img_style = (
+        "shape=image;verticalLabelPosition=bottom;labelBackgroundColor=none;"
+        "verticalAlign=top;imageAspect=1;"
+        f"image=data:image/png;base64,{b64};"
+    )
+    cid = next_id()
+    cell = ET.SubElement(
+        root_el, "mxCell",
+        id=cid, value="",
+        style=img_style,
+        vertex="1", parent="1",
+    )
+    ET.SubElement(
+        cell, "mxGeometry",
+        x="20", y="20", width="1200", height="700",
+        **{"as": "geometry"},
+    )
+    return _serialize_xml(mxfile)
+
+
+# ──────────────────────────────────────────────
 # 공개 API
 # ──────────────────────────────────────────────
 
@@ -978,6 +1101,23 @@ def mermaid_to_drawio(mermaid_code: str, title: str = "") -> str:
         edges      = parse_mermaid_edges(code)
         subgraphs  = parse_mermaid_subgraphs(code)
         return _build_flowchart_xml(nodes, edges, subgraphs, direction, title, mermaid_code=code)
+
+    # erDiagram 분기 — layout_engine SVG 파서 사용 + PNG 임베드 폴백
+    if first_line.lower().replace(" ", "").startswith("erdiagram"):
+        try:
+            from converters.layout_engine import compute_layout_via_mmdc
+            layout = compute_layout_via_mmdc(
+                code,
+                target_w_in=13.0,
+                target_h_in=8.0,
+                puppeteer_config="/app/backend/puppeteer-config.json",
+            )
+        except Exception:
+            layout = None
+        if layout is not None and layout.nodes:
+            return _build_er_xml_from_layout(layout, title)
+        # 폴백: mmdc PNG base64 임베드
+        return _build_png_embed_xml(code, title)
 
     # 기타 타입: 노드/엣지 파싱만 시도
     nodes     = parse_mermaid_nodes(code)

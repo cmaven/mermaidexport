@@ -2,7 +2,9 @@
 # png.py: Mermaid 코드를 PNG 이미지로 변환하는 모듈
 # 상세: mmdc CLI(mermaid-cli)를 사용하여 .mmd 파일을 PNG로 렌더링.
 #       NanumSquare 폰트, base 테마, 파란색/슬레이트 색상 스키마 적용.
-# 생성일: 2026-04-07 | 수정일: 2026-04-07
+#       ER/class/state 등 비-flowchart 타입은 PPTX 우회 시 깨질 수 있으므로
+#       mmdc 직접 PNG 생성 경로를 우선 사용한다.
+# 생성일: 2026-04-07 | 수정일: 2026-05-18
 # ============================================================
 
 import json
@@ -148,6 +150,9 @@ def mermaid_to_png(mermaid_code: str, title: str = "") -> bytes:
     PPTX와 동일한 시각적 결과를 보장한다.
     LibreOffice가 없으면 mmdc 폴백.
 
+    단, ER/class/state 다이어그램은 PPTX 변환기가 깨질 수 있으므로
+    mmdc 직접 PNG 생성을 우선 사용해 mermaid 원본 품질을 보존한다.
+
     Args:
         mermaid_code: 변환할 Mermaid 다이어그램 코드 문자열.
         title: 다이어그램 제목 (선택).
@@ -155,6 +160,17 @@ def mermaid_to_png(mermaid_code: str, title: str = "") -> bytes:
     Returns:
         렌더링된 PNG 이미지의 바이트 데이터.
     """
+    # 다이어그램 타입 감지 — ER/class/state는 PPTX 우회 시 회귀 위험이 있어
+    # mmdc 직접 PNG 생성을 우선 사용한다.
+    first_line_compact = (
+        mermaid_code.strip().split("\n", 1)[0].strip().lower().replace(" ", "")
+    )
+    is_er_or_class = first_line_compact.startswith(
+        ("erdiagram", "classdiagram", "statediagram")
+    )
+    if is_er_or_class:
+        return _png_via_mmdc(mermaid_code)
+
     # 1차: PPTX → LibreOffice → PNG (PPTX와 동일 결과)
     if shutil.which("libreoffice") is not None:
         try:

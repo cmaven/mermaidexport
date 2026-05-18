@@ -4,7 +4,7 @@
 #       flowchart/graph 및 sequenceDiagram 지원
 #       엣지는 mmdc SVG polyline + 8방향 corner detour v2 + 다단계 우회
 #       서브그래프 타이틀바도 회피 대상에 포함
-# 생성일: 2026-04-07 | 수정일: 2026-05-18
+# 생성일: 2026-04-07 | 수정일: 2026-05-18 (ER 분기 + multi-paragraph + PNG 폴백 추가)
 # ============================================================
 
 import logging
@@ -518,6 +518,50 @@ def _vertical_center_text(shape) -> None:
     shape.text_frame.vertical_anchor = MSO_ANCHOR.MIDDLE
 
 
+def _set_text_multiline(
+    shape,
+    text: str,
+    font_size: int = 9,
+    color: RGBColor = RGBColor(0x1E, 0x29, 0x3B),
+) -> None:
+    """ER 엔티티 등 '\\n' 포함 라벨을 multi-paragraph text frame으로 설정.
+
+    첫 줄: bold + center + (font_size+1)pt  — 엔티티 이름
+    이후 줄: normal + left + (font_size-1)pt — 속성 행 (type name keys comment)
+    """
+    from pptx.enum.text import MSO_ANCHOR
+
+    lines = [ln for ln in text.split("\n") if ln.strip()]
+    tf = shape.text_frame
+    tf.word_wrap = True
+    tf.auto_size = None
+    tf.margin_top = Pt(3)
+    tf.margin_bottom = Pt(2)
+    tf.margin_left = Pt(4)
+    tf.margin_right = Pt(4)
+    tf.vertical_anchor = MSO_ANCHOR.TOP
+
+    tf.clear()
+    for i, line in enumerate(lines):
+        para = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+        para.alignment = PP_ALIGN.CENTER if i == 0 else PP_ALIGN.LEFT
+        run = para.add_run()
+        run.text = line
+        run.font.size = Pt(font_size + 1) if i == 0 else Pt(max(6, font_size - 1))
+        run.font.bold = (i == 0)
+        run.font.color.rgb = color
+        try:
+            rPr = run._r.get_or_add_rPr()
+            ea = etree.SubElement(rPr, qn("a:ea"))
+            ea.set("typeface", "맑은 고딕")
+            latin = rPr.find(qn("a:latin"))
+            if latin is None:
+                latin = etree.SubElement(rPr, qn("a:latin"))
+            latin.set("typeface", "맑은 고딕")
+        except Exception:
+            pass
+
+
 def _add_rounded_rect(slide, x: float, y: float, w: float, h: float,
                       fill: RGBColor, stroke: RGBColor,
                       text: str, font_size: int = 9,
@@ -529,8 +573,12 @@ def _add_rounded_rect(slide, x: float, y: float, w: float, h: float,
     )
 
     _set_shape_fill(shape, fill, stroke)
-    _set_text(shape, text, font_size=font_size, color=text_color)
-    _vertical_center_text(shape)
+    if "\n" in text:
+        # ER 엔티티 등 멀티라인 라벨: multi-paragraph 렌더링
+        _set_text_multiline(shape, text, font_size=font_size, color=text_color)
+    else:
+        _set_text(shape, text, font_size=font_size, color=text_color)
+        _vertical_center_text(shape)
     remove_style_element(shape._element)
     _remove_shadow(shape)
     return shape
@@ -1075,6 +1123,74 @@ def _render_sequence(mermaid_code: str, title: str = "") -> bytes:
 
 
 # ──────────────────────────────────────────────
+# ER 다이어그램 PNG 폴백 렌더러
+# ──────────────────────────────────────────────
+
+def _render_er_png_fallback(mermaid_code: str, title: str = "") -> bytes:
+    """ER 다이어그램 레이아웃 엔진 실패 시 mmdc PNG를 PPTX 슬라이드에 임베드한다.
+
+    mmdc가 없거나 PNG 생성에 실패하면 에러 메시지 텍스트 박스를 표시한다.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+    from pathlib import Path
+
+    prs = Presentation()
+    prs.slide_width = Inches(SLIDE_W)
+    prs.slide_height = Inches(SLIDE_H)
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    _add_title_and_bg(slide, title)
+
+    avail_w = SLIDE_W - 2 * MARGIN
+    avail_h = SLIDE_H - TITLE_H - 2 * MARGIN
+
+    png_bytes: Optional[bytes] = None
+    if shutil.which("mmdc"):
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                workdir = Path(tmp)
+                in_path = workdir / "input.mmd"
+                out_path = workdir / "out.png"
+                in_path.write_text(mermaid_code, encoding="utf-8")
+                cmd = ["mmdc", "-i", str(in_path), "-o", str(out_path), "-b", "white"]
+                pc = "/app/backend/puppeteer-config.json"
+                if Path(pc).exists():
+                    cmd += ["-p", pc]
+                result = subprocess.run(cmd, capture_output=True, timeout=30)
+                if result.returncode == 0 and out_path.exists():
+                    png_bytes = out_path.read_bytes()
+        except Exception as exc:
+            logger.warning("ER PNG 폴백 mmdc 실패: %s", exc)
+
+    if png_bytes:
+        # 폭 기준으로 삽입 (aspect ratio는 python-pptx가 자동 유지)
+        slide.shapes.add_picture(
+            BytesIO(png_bytes),
+            Inches(MARGIN),
+            Inches(TITLE_H + MARGIN),
+            width=Inches(avail_w),
+        )
+    else:
+        # mmdc 실패 시 에러 안내 텍스트 박스
+        txb = slide.shapes.add_textbox(
+            Inches(MARGIN), Inches(TITLE_H + MARGIN),
+            Inches(avail_w), Inches(1.0),
+        )
+        tf = txb.text_frame
+        para = tf.paragraphs[0]
+        run = para.add_run()
+        run.text = "ER 다이어그램 변환 실패: mmdc 미설치 또는 렌더링 오류입니다."
+        run.font.size = Pt(12)
+        run.font.color.rgb = RGBColor(0xEF, 0x44, 0x44)
+
+    output = BytesIO()
+    prs.save(output)
+    output.seek(0)
+    return output.read()
+
+
+# ──────────────────────────────────────────────
 # 공개 API
 # ──────────────────────────────────────────────
 
@@ -1098,10 +1214,14 @@ def mermaid_to_pptx(mermaid_code: str, title: str = "") -> bytes:
 
     # 시퀀스 다이어그램 감지: 첫 줄이 sequenceDiagram이면 시퀀스 렌더링 분기
     first_line = mermaid_code.strip().split('\n')[0].strip().lower()
-    if 'sequencediagram' in first_line.replace(' ', ''):
+    compact_first = first_line.replace(' ', '')
+    if 'sequencediagram' in compact_first:
         return _render_sequence(mermaid_code, title)
 
-    # 새 레이아웃 엔진(mmdc SVG) 시도 — 성공 시 dagre 품질 그대로 사용
+    # ER 다이어그램 감지 (레이아웃 실패 시 PNG 폴백 경로 결정에 사용)
+    is_er = compact_first.startswith('erdiagram')
+
+    # 새 레이아웃 엔진(mmdc SVG) 시도 — erDiagram 포함 (layout_engine v2)
     try:
         from converters.layout_engine import compute_layout_via_mmdc
         layout = compute_layout_via_mmdc(
@@ -1116,7 +1236,12 @@ def mermaid_to_pptx(mermaid_code: str, title: str = "") -> bytes:
     if layout is not None and layout.nodes:
         return _render_pptx_from_layout(layout, title)
 
-    # 1. 파싱 (폴백)
+    # ER 다이어그램: parse_mermaid는 ER 구문 미지원 → PNG 폴백
+    if is_er:
+        logger.info("ER 다이어그램 레이아웃 엔진 실패 → PNG 폴백 사용")
+        return _render_er_png_fallback(mermaid_code, title)
+
+    # 1. 파싱 (폴백 — flowchart 전용)
     diagram = parse_mermaid(mermaid_code)
 
     if not diagram.nodes:
