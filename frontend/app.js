@@ -1,7 +1,7 @@
 /**
  * app.js: Mermaid Web Converter 클라이언트 로직
  * 상세: 파일 업로드, 변환 API 호출, 결과 렌더링, 다운로드 처리
- * 생성일: 2026-04-07
+ * 생성일: 2026-04-07 | 수정일: 2026-05-18
  */
 
 'use strict';
@@ -25,6 +25,7 @@ const FORMAT_META = {
   drawio:     { label: 'Draw.io',   cls: 'btn-drawio', ext: 'drawio'  },
   excalidraw: { label: 'Excalidraw',cls: 'btn-excali', ext: 'excalidraw' },
   pptx:       { label: 'PPTX',      cls: 'btn-pptx',   ext: 'pptx'   },
+  md:         { label: 'Mermaid (.md)', cls: 'btn-md', ext: 'md'      },
 };
 
 // ============================================================
@@ -285,6 +286,23 @@ function createDiagramCard(jobId, diagram, cardIndex) {
   });
 
   card.appendChild(header);
+
+  // R3: Mermaid 원본 코드 토글 표시
+  if (diagram.mermaid_code) {
+    const details = document.createElement('details');
+    details.className = 'mermaid-source';
+    const summary = document.createElement('summary');
+    summary.textContent = 'Mermaid 원본 보기';
+    const pre = document.createElement('pre');
+    const code = document.createElement('code');
+    code.className = 'language-mermaid';
+    code.textContent = diagram.mermaid_code;   // textContent로 자동 이스케이프
+    pre.appendChild(code);
+    details.appendChild(summary);
+    details.appendChild(pre);
+    card.appendChild(details);
+  }
+
   card.appendChild(preview);
   card.appendChild(actions);
 

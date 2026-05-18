@@ -1,7 +1,7 @@
 # ============================================================
 # main.py: Mermaid Web Converter FastAPI 서버
 # 상세: MD 파일 업로드 → Mermaid 블록 추출 → 다중 포맷 변환 API
-# 생성일: 2026-04-07 | 수정일: 2026-04-07
+# 생성일: 2026-04-07 | 수정일: 2026-05-18
 # ============================================================
 
 import io
@@ -49,6 +49,7 @@ FORMAT_EXT: dict[str, str] = {
     "excalidraw": "excalidraw",
     "pptx": "pptx",
     "combined-pptx": "pptx",
+    "md": "md",
 }
 
 # 포맷 → Content-Type 매핑
@@ -58,6 +59,7 @@ FORMAT_CONTENT_TYPE: dict[str, str] = {
     "excalidraw": "application/json",
     "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     "combined-pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "md": "text/markdown; charset=utf-8",
 }
 
 # ---------------------------------------------------------------------------
@@ -154,12 +156,23 @@ async def convert(file: UploadFile = File(...)) -> JSONResponse:
             formats["pptx"] = None
             errors["pptx"] = str(exc)
 
+        # Mermaid 원본(.md) 저장
+        try:
+            md_content = f"```mermaid\n{mermaid_code}\n```\n"
+            out_path = job_dir / f"diagram_{i}.md"
+            out_path.write_text(md_content, encoding="utf-8")
+            formats["md"] = f"/api/download/{job_id}/{i}/md"
+        except Exception as exc:
+            formats["md"] = None
+            errors["md"] = str(exc)
+
         # 미리보기는 PNG 우선; PNG가 없으면 null
         preview = formats.get("png")
 
         diagram_entry: dict = {
             "index": i,
             "title": title,
+            "mermaid_code": mermaid_code,
             "formats": formats,
             "preview": preview,
         }

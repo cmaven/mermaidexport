@@ -1,4 +1,4 @@
-/* style.css: Mermaid Web Converter 스타일 시트 | 생성일: 2026-04-07 */
+/* style.css: Mermaid Web Converter 스타일 시트 | 생성일: 2026-04-07 | 수정일: 2026-05-18 */
 
 /* ============================================================
    CSS 변수 (디자인 토큰)
@@ -570,6 +570,43 @@ body {
 .btn-drawio   { background: var(--color-drawio);  box-shadow: 0 2px 6px rgba(245,158,11,.3); }
 .btn-excali   { background: var(--color-excali);  box-shadow: 0 2px 6px rgba(139,92,246,.3); }
 .btn-pptx     { background: var(--color-pptx);    box-shadow: 0 2px 6px rgba(239,68,68,.3); }
+.btn-md       { background: #475569;              box-shadow: 0 2px 6px rgba(71,85,105,.3); }
+.btn-md:hover { filter: brightness(1.12); }
+
+/* Mermaid 원본 코드 토글 (R3) */
+.mermaid-source {
+  width: 100%;
+  border-top: 1px solid var(--color-border);
+  padding: 0 20px;
+}
+
+.mermaid-source summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: var(--color-text-secondary);
+  padding: 10px 0;
+  user-select: none;
+  list-style: disclosure-closed;
+}
+
+.mermaid-source[open] summary {
+  list-style: disclosure-open;
+}
+
+.mermaid-source pre {
+  background: #f8fafc;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  margin-top: 0;
+  margin-bottom: 12px;
+  overflow-x: auto;
+  max-height: 200px;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: #1e293b;
+  line-height: 1.5;
+}
 
 /* ============================================================
    로딩 오버레이
