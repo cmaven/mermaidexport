@@ -23,7 +23,7 @@ from lxml import etree
 # ──────────────────────────────────────────────
 # 색상 팔레트 (공통 palette.py에서 가져옴)
 # ──────────────────────────────────────────────
-from converters.palette import NODE_COLORS, SUBGRAPH_COLORS, TEXT_COLOR, PRIMARY_ACCENT, LINE_COLOR
+from converters.palette import NODE_COLORS, SUBGRAPH_COLORS, TEXT_COLOR
 
 
 def _hex_to_rgb(hex_str: str) -> RGBColor:
@@ -33,8 +33,6 @@ def _hex_to_rgb(hex_str: str) -> RGBColor:
 
 
 _TEXT_RGB = _hex_to_rgb(TEXT_COLOR)
-_PRIMARY_ACCENT_RGB = _hex_to_rgb(PRIMARY_ACCENT)
-_LINE_RGB = _hex_to_rgb(LINE_COLOR)
 
 _PALETTE = [
     (_hex_to_rgb(fill), _hex_to_rgb(stroke), _TEXT_RGB)
@@ -888,7 +886,7 @@ def _render_sequence(mermaid_code: str, title: str = "") -> bytes:
             Inches(SLIDE_W - 2 * MARGIN), Inches(0.03)
         )
         line_bar.fill.solid()
-        line_bar.fill.fore_color.rgb = _PRIMARY_ACCENT_RGB
+        line_bar.fill.fore_color.rgb = RGBColor(0x3B, 0x82, 0xF6)
         line_bar.line.fill.background()
         remove_style_element(line_bar._element)
         _remove_shadow(line_bar)
@@ -936,7 +934,7 @@ def _render_sequence(mermaid_code: str, title: str = "") -> bytes:
             cx_emu, lifeline_top_emu,
             cx_emu + 1, lifeline_bot_emu  # +1 EMU to avoid zero extent
         )
-        connector.line.color.rgb = _LINE_RGB
+        connector.line.color.rgb = RGBColor(0x94, 0xA3, 0xB8)
         connector.line.width = Pt(0.75)
         connector.line.dash_style = MSO_LINE_DASH_STYLE.DASH
 
@@ -1158,7 +1156,7 @@ def mermaid_to_pptx(mermaid_code: str, title: str = "") -> bytes:
             Inches(SLIDE_W - 2 * MARGIN), Inches(0.03)
         )
         line_bar.fill.solid()
-        line_bar.fill.fore_color.rgb = _PRIMARY_ACCENT_RGB
+        line_bar.fill.fore_color.rgb = RGBColor(0x3B, 0x82, 0xF6)
         line_bar.line.fill.background()
         remove_style_element(line_bar._element)
         _remove_shadow(line_bar)

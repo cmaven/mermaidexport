@@ -15,35 +15,34 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-# Mermaid 테마 설정 — SaaS 마케팅 스타일 (Scaleway / Vercel 톤)
-# Primary purple #6B46FF stroke, blue/pink fill, 1px solid, 그림자 없음
+# Mermaid 테마 설정 (generate_diagrams.py 스타일과 동일)
 _MERMAID_CONFIG = {
     "theme": "base",
     "themeVariables": {
-        "fontFamily": "NanumSquare, Inter, sans-serif",
+        "fontFamily": "NanumSquare, sans-serif",
         "fontSize": "19px",
-        "primaryColor": "#DBEAFE",
-        "primaryBorderColor": "#6B46FF",
-        "primaryTextColor": "#1E293B",
+        "primaryColor": "#dbeafe",
+        "primaryBorderColor": "#3b82f6",
+        "primaryTextColor": "#1e293b",
         "lineColor": "#475569",
-        "clusterBkg": "#F5F3FF",
-        "clusterBorder": "#6B46FF",
-        "edgeLabelBackground": "#FFFFFF",
-        "nodeTextColor": "#1E293B",
+        "clusterBkg": "#fafafa",
+        "clusterBorder": "#94a3b8",
+        "edgeLabelBackground": "#ffffff",
+        "nodeTextColor": "#1e293b",
         "arrowheadColor": "#475569",
-        # 시퀀스 다이어그램 테마 (SaaS 톤 일치)
-        "actorBkg": "#DBEAFE",
-        "actorBorder": "#6B46FF",
-        "actorTextColor": "#1E293B",
+        # 시퀀스 다이어그램 테마
+        "actorBkg": "#dbeafe",
+        "actorBorder": "#3b82f6",
+        "actorTextColor": "#1e293b",
         "signalColor": "#475569",
-        "signalTextColor": "#1E293B",
-        "noteBkgColor": "#FCE7F3",
-        "noteBorderColor": "#6B46FF",
-        "noteTextColor": "#1E293B",
-        "activationBkgColor": "#EDE9FE",
-        "activationBorderColor": "#6B46FF",
-        "labelBoxBkgColor": "#F5F3FF",
-        "labelBoxBorderColor": "#6B46FF",
+        "signalTextColor": "#1e293b",
+        "noteBkgColor": "#fef3c7",
+        "noteBorderColor": "#d97706",
+        "noteTextColor": "#1e293b",
+        "activationBkgColor": "#ede9fe",
+        "activationBorderColor": "#6d28d9",
+        "labelBoxBkgColor": "#f0fdf4",
+        "labelBoxBorderColor": "#16a34a",
     },
     "flowchart": {
         "padding": 70,
