@@ -148,3 +148,19 @@
   - 테스트: 노드A fill=FF0000 (red 클래스 정상 적용)
 - **검증**: 8/8 PASS (edge label 충돌 0건, 노드 비겹침, HTML entity 0건)
 - **커밋**: ca647d1
+
+## [track-c-verifier] 2026-05-19 12:17
+
+- track-C 검증 완료
+- 최종 판정: **PASS**
+- 통계: PASS=28 / FAIL=0 / 전체=28
+- 보고서: .omc/research/verification-report.md
+- after/ PNG: 7개
+
+## [track-c-verifier] 2026-05-19 12:25
+
+- track-C 검증 완료
+- 최종 판정: **PASS**
+- 통계: PASS=28 / FAIL=0 / 전체=28
+- 보고서: .omc/research/verification-report.md
+- after/ PNG: 7개
