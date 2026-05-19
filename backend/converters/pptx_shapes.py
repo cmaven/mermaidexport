@@ -479,10 +479,10 @@ def _set_shape_fill(shape, fill_color: RGBColor, stroke_color: RGBColor) -> None
 
 def _set_text(shape, text: str, font_size: int = 9, bold: bool = False,
               color: RGBColor = RGBColor(0x1E, 0x29, 0x3B)) -> None:
-    """도형의 텍스트 프레임을 설정한다. B.2: 텍스트가 넘칠 경우 폰트 자동 축소."""
+    """도형의 텍스트 프레임을 설정한다. word_wrap=True로 줄 바꿈 허용."""
     tf = shape.text_frame
     tf.word_wrap = True
-    tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+    tf.auto_size = None  # 폰트 자동 축소 비활성화 — 박스를 확장해 가독성 보장
     tf.margin_top = Pt(2)
     tf.margin_bottom = Pt(2)
     tf.margin_left = Pt(4)
