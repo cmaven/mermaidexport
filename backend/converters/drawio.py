@@ -493,8 +493,13 @@ def _add_edge_cell(
     style: str,
     parent: str = "1",
     next_id: callable = None,
+    waypoints: list[tuple[float, float]] | None = None,
 ) -> str:
-    """엣지 mxCell을 추가하고 cell id를 반환한다."""
+    """엣지 mxCell을 추가하고 cell id를 반환한다.
+
+    waypoints: [(x_px, y_px), ...] — SVG/layout 경유점을 mxGeometry Array[points]로 삽입.
+               첫 점(source)과 마지막 점(target)은 제외하고 중간 경유점만 포함.
+    """
     cid = next_id()
     cell = ET.SubElement(root, "mxCell",
         id=cid,
@@ -505,7 +510,13 @@ def _add_edge_cell(
         target=target_cid,
         parent=parent,
     )
-    ET.SubElement(cell, "mxGeometry", relative="1", **{"as": "geometry"})
+    geo = ET.SubElement(cell, "mxGeometry", relative="1", **{"as": "geometry"})
+    # SVG path 경유점 → draw.io mxGeometry Array[points]
+    mid_pts = waypoints[1:-1] if waypoints and len(waypoints) > 2 else []
+    if mid_pts:
+        arr = ET.SubElement(geo, "Array", **{"as": "points"})
+        for px, py in mid_pts:
+            ET.SubElement(arr, "mxPoint", x=f"{px:.1f}", y=f"{py:.1f}")
     return cid
 
 
