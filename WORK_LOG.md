@@ -295,3 +295,38 @@
 
 ### 신호 파일
 - `.omc/state/track_e_done`
+
+---
+
+## [track-b-executor] iter-2 Layout 재스케일 — 2026-05-19
+
+### 구현 완료
+
+- **레이아웃 재스케일 인프라** (`layout_engine.py`):
+  - `_apply_layout_rescale(layout, factor)`: nodes/clusters/edges/canvas/layout.scale 전역 동기 rescale
+  - `_compute_rescale_factor(layout, min_node_w=1.0, min_node_h=0.4, max_w, max_h)`: 최소 노드 크기 보장 factor 계산
+  - `compute_layout_via_mmdc()` 내 ER/graph 양쪽 분기에서 자동 호출 (E.2 + iter-2)
+
+- **동작 특성**:
+  - 노드가 min_node_w=1.0" / min_node_h=0.4" 미만이면 전역 upscale 적용
+  - upscale 후 canvas > target_w/h 이면 proportional shrink (슬라이드 경계 초과 방지)
+  - 밀집 다이어그램 (canvas≈max_w): upscale×shrink=1.0 (수학적 올바른 동작)
+
+- **iter-1 노드 겹침 4건 해소**:
+  - iter-1-after graph_diagram_0: FAIL (4건) → iter-2-after: PASS (0건)
+  - 해소 원인: track-E nodeSpacing:80/rankSpacing:100 적용
+
+### 검증 결과
+
+| 기준 | 결과 |
+|------|------|
+| assert_pptx 회귀 | **19/19 PASS** |
+| smoke_test_er | **12/12 PASS** |
+| iter-1 노드 겹침 4건 | **PASS** 0건으로 해소 |
+| custGeom 유지 | **PASS** 33+4 edges |
+
+### 파일 수정
+- `backend/converters/layout_engine.py`: `_apply_layout_rescale`, `_compute_rescale_factor`, `compute_layout_via_mmdc` 내 호출
+
+### 신호
+- `.omc/state/iter_2_done`

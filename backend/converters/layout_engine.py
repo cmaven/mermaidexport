@@ -996,7 +996,7 @@ def compute_layout_via_mmdc(
                 if not nodes_map:
                     logger.warning("ER SVG에서 엔티티를 찾지 못함")
                     return None
-                return LayoutResult(
+                result = LayoutResult(
                     nodes=nodes_map,
                     clusters=[],
                     edges=edges,
@@ -1004,6 +1004,10 @@ def compute_layout_via_mmdc(
                     canvas_h=svg_h_px * scale,
                     scale=scale,
                 )
+                # iter-2: 최소 노드 크기 보장 전역 리스케일
+                rf = _compute_rescale_factor(result, max_w=target_w_in, max_h=target_h_in)
+                _apply_layout_rescale(result, rf)
+                return result
 
             # flowchart / graph: 기존 경로
             clusters_map = _parse_clusters(root, scale, root_prefix=root_prefix)
@@ -1019,7 +1023,7 @@ def compute_layout_via_mmdc(
             clusters_list = list(clusters_map.values())
             _assign_clusters_to_nodes(nodes_map, clusters_list)
 
-            return LayoutResult(
+            result = LayoutResult(
                 nodes=nodes_map,
                 clusters=clusters_list,
                 edges=edges,
@@ -1027,6 +1031,10 @@ def compute_layout_via_mmdc(
                 canvas_h=svg_h_px * scale,
                 scale=scale,
             )
+            # iter-2: 최소 노드 크기 보장 전역 리스케일
+            rf = _compute_rescale_factor(result, max_w=target_w_in, max_h=target_h_in)
+            _apply_layout_rescale(result, rf)
+            return result
     except Exception as exc:
         logger.warning("layout_engine 예외: %s", exc, exc_info=True)
         return None
