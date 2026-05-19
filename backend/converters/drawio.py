@@ -1115,6 +1115,15 @@ def mermaid_to_drawio(mermaid_code: str, title: str = "") -> str:
         except Exception:
             layout = None
         if layout is not None and layout.nodes:
+            # 손상 레이아웃 감지: 엣지가 있는데 노드 매칭이 없으면 PNG 폴백
+            if layout.edges:
+                node_ids = set(layout.nodes.keys())
+                matched = sum(
+                    1 for e in layout.edges
+                    if e.source in node_ids and e.target in node_ids
+                )
+                if matched == 0:
+                    return _build_png_embed_xml(code, title)
             return _build_er_xml_from_layout(layout, title)
         # 폴백: mmdc PNG base64 임베드
         return _build_png_embed_xml(code, title)

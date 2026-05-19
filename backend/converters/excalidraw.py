@@ -979,6 +979,67 @@ def mermaid_to_excalidraw(mermaid_code: str, title: str = "") -> dict:
             "files": {},
         }
 
+    # ER 다이어그램 감지 — layout_engine 사용 후 기본 요소 빌드
+    if 'erdiagram' in first_line.replace(' ', ''):
+        try:
+            from converters.layout_engine import compute_layout_via_mmdc
+            er_layout = compute_layout_via_mmdc(
+                mermaid_code,
+                target_w_in=13.0,
+                target_h_in=8.0,
+            )
+        except Exception:
+            er_layout = None
+        if er_layout is not None and er_layout.nodes:
+            # 픽셀 단위로 변환 (1 inch = 96px 기준)
+            _PX_PER_IN = 96
+            er_elements: list[dict] = []
+            node_rect_ids: dict[str, str] = {}
+            er_centers: dict[str, tuple[int, int]] = {}
+            for ent_name, node in er_layout.nodes.items():
+                px_x = int(node.x * _PX_PER_IN)
+                px_y = int(node.y * _PX_PER_IN)
+                px_w = max(int(node.w * _PX_PER_IN), _NODE_WIDTH)
+                lines = node.label.split("\n")
+                px_h = max(int(node.h * _PX_PER_IN), _NODE_HEIGHT * len(lines))
+                rect_id = _new_id()
+                text_id = _new_id()
+                node_rect_ids[ent_name] = rect_id
+                er_centers[ent_name] = (px_x + px_w // 2, px_y + px_h // 2)
+                er_elements.append(
+                    _make_rectangle(rect_id, px_x, px_y, px_w, px_h,
+                                    stroke_color="#9370DB", bg_color="#ECECFF")
+                )
+                er_elements.append(
+                    _make_text(text_id, px_x + px_w // 2, px_y + px_h // 2,
+                               node.label, container_id=rect_id)
+                )
+
+            for edge in er_layout.edges:
+                src_id = node_rect_ids.get(edge.source)
+                dst_id = node_rect_ids.get(edge.target)
+                if not src_id or not dst_id:
+                    continue
+                sx, sy = er_centers.get(edge.source, (0, 0))
+                dx, dy = er_centers.get(edge.target, (0, 0))
+                arrow_id = _new_id()
+                er_elements.extend(
+                    _make_arrow(arrow_id, sx, sy, dx, dy,
+                                start_id=src_id, end_id=dst_id,
+                                label=edge.label)
+                )
+            return {
+                "type": "excalidraw",
+                "version": 2,
+                "source": "mermaid-web-converter",
+                "elements": er_elements,
+                "appState": {
+                    "viewBackgroundColor": "#ffffff",
+                    "gridSize": 20,
+                },
+                "files": {},
+            }
+
     nodes, edges, subgraphs = _parse_mermaid(mermaid_code)
     direction = _parse_direction(mermaid_code)
 
