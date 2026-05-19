@@ -2008,6 +2008,9 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
         for nid, n in layout.nodes.items()
     }
 
+    # B.4: 이미 배치된 edge label bbox 목록 (상호 회피용)
+    placed_label_bboxes: list[tuple[float, float, float, float]] = []
+
     for edge in layout.edges:
         if edge.source not in shape_map or edge.target not in shape_map:
             continue
@@ -2059,15 +2062,29 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
         _add_polyline_edge(slide, pts, dashed=edge.dashed)
         if edge.label and edge.label_pos:
             lx, ly = edge.label_pos
-            # B.5: edge label 충돌 nudge (src/dst 제외한 노드 bbox 전달)
-            label_avoid = [
-                bbox for nid, bbox in all_node_bboxes.items()
-                if nid not in (edge.source, edge.target)
-            ]
+            cx_label = off_x + lx
+            cy_label = off_y + ly
+            # B.4/B.5: 회피 대상 = 모든 노드(src/dst 포함) + 비관련 cluster + 이미 배치된 라벨
+            #           edge label은 어떤 노드와도 겹치면 안 됨
+            label_avoid: list[tuple[float, float, float, float]] = list(all_node_bboxes.values())
+            for cl in layout.clusters:
+                if cl.id not in (src_cl_id, dst_cl_id):
+                    label_avoid.append(
+                        (off_x + cl.x, off_y + cl.y,
+                         off_x + cl.x + cl.w, off_y + cl.y + cl.h)
+                    )
+            label_avoid.extend(placed_label_bboxes)  # edge label 상호 회피
+
             _add_edge_label_at(
-                slide, off_x + lx, off_y + ly, edge.label,
+                slide, cx_label, cy_label, edge.label,
                 avoid_bboxes=label_avoid,
             )
+            # 배치된 라벨 bbox 누적 (est_w/h와 동일 계산)
+            est_w_l = max(0.5, 0.08 * len(edge.label) + 0.2)
+            placed_label_bboxes.append((
+                cx_label - est_w_l / 2, cy_label - 0.11,
+                cx_label + est_w_l / 2, cy_label + 0.11,
+            ))
 
     output = BytesIO()
     prs.save(output)
