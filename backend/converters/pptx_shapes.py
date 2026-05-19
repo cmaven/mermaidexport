@@ -4,7 +4,7 @@
 #       flowchart/graph 및 sequenceDiagram 지원
 #       엣지는 mmdc SVG polyline + 8방향 corner detour v2 + 다단계 우회
 #       서브그래프 타이틀바도 회피 대상에 포함
-# 생성일: 2026-04-07 | 수정일: 2026-05-18 (ER 분기 + multi-paragraph + PNG 폴백 추가)
+# 생성일: 2026-04-07 | 수정일: 2026-05-19 (ER 분기 + multi-paragraph + PNG 폴백 + custGeom bezier)
 # ============================================================
 
 import html as _html_std
@@ -31,6 +31,7 @@ from lxml import etree
 # 색상 팔레트 (공통 palette.py에서 가져옴)
 # ──────────────────────────────────────────────
 from converters.palette import NODE_COLORS, SUBGRAPH_COLORS, TEXT_COLOR
+from converters.svg_path import parse_svg_path, path_bounding_box, PathCmd as _SvgPathCmd
 
 
 def _hex_to_rgb(hex_str: str) -> RGBColor:
@@ -1922,6 +1923,162 @@ def _add_polyline_edge(
         _remove_shadow(conn)
 
 
+def _add_freeform_edge(
+    slide,
+    path_d: Optional[str],
+    scale: float,
+    off_x: float,
+    off_y: float,
+    dashed: bool = False,
+) -> bool:
+    """SVG path d 속성 → OOXML custGeom freeform shape 으로 edge 를 그린다 (트랙 D).
+
+    dagre 의 bezier 제어점을 그대로 보존해 부드러운 곡선을 렌더링.
+    path_d 가 None 이거나 파싱 실패 시 False 반환 → 호출자가 polyline 폴백 사용.
+
+    Args:
+        path_d: SVG path d 원본 속성 (SVG pixel 좌표계). None 이면 즉시 False.
+        scale:  px → inches 변환 계수 (layout.scale).
+        off_x, off_y: 슬라이드 오프셋 (inches).
+        dashed: dash 스타일 여부.
+
+    Returns:
+        True = custGeom shape 추가 성공. False = 폴백 필요.
+    """
+    if not path_d:
+        return False
+
+    try:
+        cmds = parse_svg_path(path_d)
+    except Exception:
+        return False
+
+    if not cmds:
+        return False
+
+    # SVG px → 절대 slide inches 좌표로 변환된 PathCmd 목록
+    abs_cmds: list[_SvgPathCmd] = []
+    for cmd in cmds:
+        abs_pts = [(px * scale + off_x, py * scale + off_y) for px, py in cmd.pts]
+        abs_cmds.append(_SvgPathCmd(cmd.op, abs_pts))
+
+    bb = path_bounding_box(abs_cmds)
+    if bb is None:
+        return False
+
+    min_x, min_y, max_x, max_y = bb
+    PAD = 0.05  # inches — 제어점이 bbox 경계 밖으로 나가지 않도록 여유
+    min_x -= PAD; min_y -= PAD
+    max_x += PAD; max_y += PAD
+
+    cx_in = max_x - min_x
+    cy_in = max_y - min_y
+    if cx_in < 0.001 or cy_in < 0.001:
+        return False
+
+    shape_x_emu = int(Inches(min_x))
+    shape_y_emu = int(Inches(min_y))
+    shape_cx_emu = int(Inches(cx_in))
+    shape_cy_emu = int(Inches(cy_in))
+
+    def to_local(ax_in: float, ay_in: float) -> tuple[int, int]:
+        """절대 slide inches → shape 로컬 EMU 좌표."""
+        return (
+            int(Inches(ax_in)) - shape_x_emu,
+            int(Inches(ay_in)) - shape_y_emu,
+        )
+
+    # ── XML 구조 직접 빌드 ──────────────────────────────────────────
+    sp = etree.SubElement(slide.shapes._spTree, qn("p:sp"))
+
+    # nvSpPr (이름/id)
+    nvSpPr = etree.SubElement(sp, qn("p:nvSpPr"))
+    cNvPr = etree.SubElement(nvSpPr, qn("p:cNvPr"))
+    sp_id = len(slide.shapes._spTree)
+    cNvPr.set("id", str(sp_id))
+    cNvPr.set("name", f"edge_freeform_{sp_id}")
+    cNvSpPr = etree.SubElement(nvSpPr, qn("p:cNvSpPr"))
+    spLocks = etree.SubElement(cNvSpPr, qn("a:spLocks"))
+    spLocks.set("noGrp", "1")
+    etree.SubElement(nvSpPr, qn("p:nvPr"))
+
+    # spPr
+    spPr = etree.SubElement(sp, qn("p:spPr"))
+
+    # xfrm — 위치 + 크기
+    xfrm = etree.SubElement(spPr, qn("a:xfrm"))
+    off_el = etree.SubElement(xfrm, qn("a:off"))
+    off_el.set("x", str(shape_x_emu)); off_el.set("y", str(shape_y_emu))
+    ext_el = etree.SubElement(xfrm, qn("a:ext"))
+    ext_el.set("cx", str(shape_cx_emu)); ext_el.set("cy", str(shape_cy_emu))
+
+    # custGeom
+    custGeom = etree.SubElement(spPr, qn("a:custGeom"))
+    etree.SubElement(custGeom, qn("a:avLst"))
+    etree.SubElement(custGeom, qn("a:gdLst"))
+    etree.SubElement(custGeom, qn("a:ahLst"))
+    etree.SubElement(custGeom, qn("a:cxnLst"))
+    rect_el = etree.SubElement(custGeom, qn("a:rect"))
+    rect_el.set("l", "0"); rect_el.set("t", "0")
+    rect_el.set("r", str(shape_cx_emu)); rect_el.set("b", str(shape_cy_emu))
+    pathLst = etree.SubElement(custGeom, qn("a:pathLst"))
+    path_el = etree.SubElement(pathLst, qn("a:path"))
+    path_el.set("w", str(shape_cx_emu))
+    path_el.set("h", str(shape_cy_emu))
+    path_el.set("fill", "none")   # 선 도형 — 채움 없음
+
+    for cmd in abs_cmds:
+        if cmd.op == "M":
+            mv = etree.SubElement(path_el, qn("a:moveTo"))
+            lx, ly = to_local(*cmd.pts[0])
+            pt = etree.SubElement(mv, qn("a:pt"))
+            pt.set("x", str(lx)); pt.set("y", str(ly))
+        elif cmd.op == "L":
+            ln_to = etree.SubElement(path_el, qn("a:lnTo"))
+            lx, ly = to_local(*cmd.pts[0])
+            pt = etree.SubElement(ln_to, qn("a:pt"))
+            pt.set("x", str(lx)); pt.set("y", str(ly))
+        elif cmd.op == "C":
+            cub = etree.SubElement(path_el, qn("a:cubicBezTo"))
+            for ax, ay in cmd.pts:
+                lx, ly = to_local(ax, ay)
+                pt = etree.SubElement(cub, qn("a:pt"))
+                pt.set("x", str(lx)); pt.set("y", str(ly))
+        elif cmd.op == "Q":
+            quad = etree.SubElement(path_el, qn("a:quadBezTo"))
+            for ax, ay in cmd.pts:
+                lx, ly = to_local(ax, ay)
+                pt = etree.SubElement(quad, qn("a:pt"))
+                pt.set("x", str(lx)); pt.set("y", str(ly))
+        elif cmd.op == "Z":
+            etree.SubElement(path_el, qn("a:close"))
+
+    # noFill (도형 채움 없음 — 선 전용)
+    etree.SubElement(spPr, qn("a:noFill"))
+
+    # 선 스타일
+    ln_el = etree.SubElement(spPr, qn("a:ln"))
+    ln_el.set("w", str(int(Pt(2.0))))   # 2pt = 25400 EMU
+    solidFill = etree.SubElement(ln_el, qn("a:solidFill"))
+    srgbClr = etree.SubElement(solidFill, qn("a:srgbClr"))
+    srgbClr.set("val", "475569")         # slate-600
+    if dashed:
+        prstDash = etree.SubElement(ln_el, qn("a:prstDash"))
+        prstDash.set("val", "dash")
+    tail_end = etree.SubElement(ln_el, qn("a:tailEnd"))
+    tail_end.set("type", "triangle")
+    tail_end.set("w", "med")
+    tail_end.set("len", "med")
+
+    # txBody (p:sp 필수 자식 요소)
+    txBody = etree.SubElement(sp, qn("p:txBody"))
+    etree.SubElement(txBody, qn("a:bodyPr"))
+    etree.SubElement(txBody, qn("a:lstStyle"))
+    etree.SubElement(txBody, qn("a:p"))
+
+    return True
+
+
 def _add_edge_label_at(
     slide,
     cx: float,
@@ -2128,22 +2285,27 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
                      off_x + cl.x + cl.w, off_y + cl.y + SUBGRAPH_TITLE_H)
                 )
 
-        if len(pts) == 2:
-            # 단순 직선 → 전체 회피 라우팅
-            pts = _route_around_nodes(pts[0], pts[1], avoid, padding=AVOID_PADDING)
-        else:
-            # mmdc/dagre가 라우팅한 polyline → 교차하는 segment만 우회
-            new_pts = [pts[0]]
-            for i in range(len(pts) - 1):
-                seg = (pts[i], pts[i + 1])
-                if _segment_intersects_any(seg, avoid, AVOID_PADDING):
-                    routed = _route_around_nodes(pts[i], pts[i + 1], avoid, padding=AVOID_PADDING)
-                    new_pts.extend(routed[1:])  # 첫 점은 중복이므로 제외
-                else:
-                    new_pts.append(pts[i + 1])
-            pts = new_pts
-
-        _add_polyline_edge(slide, pts, dashed=edge.dashed)
+        # ── 트랙 D: custGeom freeform 우선 시도 ──────────────────────────
+        # dagre 의 bezier 경로(path_d)를 OOXML cubicBezTo 로 직접 변환.
+        # dagre 가 이미 노드 회피를 처리하므로 avoidance routing 불필요.
+        # 파싱 실패 시 polyline + 회피 라우팅 폴백.
+        if not _add_freeform_edge(slide, edge.path_d, layout.scale, off_x, off_y, edge.dashed):
+            # polyline 폴백: 회피 라우팅 적용
+            if len(pts) == 2:
+                # 단순 직선 → 전체 회피 라우팅
+                pts = _route_around_nodes(pts[0], pts[1], avoid, padding=AVOID_PADDING)
+            else:
+                # mmdc/dagre가 라우팅한 polyline → 교차하는 segment만 우회
+                new_pts = [pts[0]]
+                for i in range(len(pts) - 1):
+                    seg = (pts[i], pts[i + 1])
+                    if _segment_intersects_any(seg, avoid, AVOID_PADDING):
+                        routed = _route_around_nodes(pts[i], pts[i + 1], avoid, padding=AVOID_PADDING)
+                        new_pts.extend(routed[1:])  # 첫 점은 중복이므로 제외
+                    else:
+                        new_pts.append(pts[i + 1])
+                pts = new_pts
+            _add_polyline_edge(slide, pts, dashed=edge.dashed)
         if edge.label and edge.label_pos:
             lx, ly = edge.label_pos
             cx_label = off_x + lx

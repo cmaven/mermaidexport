@@ -203,6 +203,44 @@
 - **판정**: **PASS** — 태스크 지침 "PPTX를 PowerPoint에서 열었을 때 잘리지 않으면 PASS 인정" 충족
 - **신호**: `.omc/state/track_b_fix3_done`
 
+## [track-b-executor] Track D — SVG path → OOXML custGeom (Task #9) — 2026-05-19
+
+### D: 부드러운 bezier 화살표 구현
+
+- **구현 파일**:
+  - `backend/converters/svg_path.py` (신규): SVG path d 파서, 단위 테스트 19/19 PASS
+  - `backend/converters/layout_engine.py`: `LaidEdge`에 `path_d: Optional[str]` 추가, `_parse_edges()` + `_parse_er_edges()`에서 원본 d 속성 보존
+  - `backend/converters/pptx_shapes.py`: `_add_freeform_edge()` 신규, svg_path import, 엣지 렌더 루프 교체
+  - `.omc/research/scripts/assert_pptx.py`: `_classify_shape()`에 FREEFORM(5) → 'other' 처리 추가
+
+- **동작 원리**:
+  - `edge.path_d` (SVG px 좌표계) × `layout.scale` → 절대 slide inches 변환
+  - bounding box + 0.05in 패딩 → shape xfrm 설정
+  - M/L/C/Q/Z 명령 → `<a:moveTo>/<a:lnTo>/<a:cubicBezTo>/<a:quadBezTo>/<a:close>`
+  - `<a:noAutofit/>` + `<a:tailEnd type="triangle"/>` + dashed 지원
+  - path_d 없거나 파싱 실패 시 polyline 폴백 유지
+
+- **검증 결과**:
+  - svg_path.py 단위 테스트: **19/19 PASS**
+  - smoke_test_er: **12/12 PASS** (회귀 없음)
+  - graph_diagram_0: custGeom=33 (33 edges, 100% cubicBezTo)
+  - graph_diagram_1: custGeom=4 (4 edges, 100% cubicBezTo)
+  - ER simple: custGeom=1 (관계선 1개 ✅ C5)
+  - assert_pptx: **15/15 PASS** (FREEFORM 분류 추가로 노드 비겹침 유지)
+
+- **인수 기준**:
+  | 기준 | 결과 |
+  |------|------|
+  | C1 모든 edge custGeom | **PASS** 33+4 shape |
+  | C2 cubicBezTo 정확 매핑 | **PASS** 100% |
+  | C3 곡선 시각 확인 | track-D verifier |
+  | C4 arrowhead 유지 | **PASS** `tailEnd type=triangle` |
+  | C5 ER 관계선 | **PASS** custGeom=1 |
+  | C6 회귀 없음 | **PASS** assert_pptx 15/15 |
+  | C7 dashed 보존 | **PASS** `prstDash val=dash` |
+
+- **신호**: `.omc/state/track_d_done`
+
 ## [track-c-verifier] 2026-05-19 12:51
 
 - track-C 검증 완료

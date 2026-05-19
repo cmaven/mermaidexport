@@ -66,6 +66,7 @@ class LaidEdge:
     points: list[tuple[float, float]] = field(default_factory=list)
     label_pos: Optional[tuple[float, float]] = None   # 라벨 중심 (inches)
     dashed: bool = False
+    path_d: Optional[str] = None   # SVG path d 원본 속성 (SVG 픽셀 좌표계; custGeom 변환용)
 
 
 @dataclass
@@ -490,11 +491,14 @@ def _parse_edges(
             continue
         src, dst = m.group(1), m.group(2)
 
+        # 원본 d 속성 보존 (custGeom 베지에 변환용)
+        path_d_raw = path.get("d") or None
+
         # 우선 data-points (base64 JSON) 시도
         b64 = path.get("data-points") or ""
         pts_px = _decode_data_points(b64)
         if not pts_px:
-            pts_px = _parse_path_d_fallback(path.get("d") or "")
+            pts_px = _parse_path_d_fallback(path_d_raw or "")
 
         if not pts_px:
             continue
@@ -515,6 +519,7 @@ def _parse_edges(
                 points=pts_in,
                 label_pos=label_pos,
                 dashed=dashed,
+                path_d=path_d_raw,
             )
         )
 
@@ -763,11 +768,14 @@ def _parse_er_edges(
 
         edge_data_id = data_id
 
+        # 원본 d 속성 보존 (custGeom 베지에 변환용)
+        path_d_raw = path.get("d") or None
+
         # 좌표 시퀀스
         b64 = path.get("data-points") or ""
         pts_px = _decode_data_points(b64)
         if not pts_px:
-            pts_px = _parse_path_d_fallback(path.get("d") or "")
+            pts_px = _parse_path_d_fallback(path_d_raw or "")
         if not pts_px:
             continue
 
@@ -797,6 +805,7 @@ def _parse_er_edges(
                 points=pts_in,
                 label_pos=label_pos,
                 dashed=dashed,
+                path_d=path_d_raw,
             )
         )
     return edges
