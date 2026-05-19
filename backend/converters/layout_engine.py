@@ -852,6 +852,73 @@ def _assign_clusters_to_nodes(
 
 
 # ──────────────────────────────────────────────
+# iter-2: Layout 전역 리스케일 (최소 노드 크기 보장)
+# ──────────────────────────────────────────────
+
+def _apply_layout_rescale(layout: "LayoutResult", factor: float) -> None:
+    """LayoutResult 의 모든 좌표에 동일 factor 를 곱한다.
+
+    nodes.x/y/w/h, clusters.x/y/w/h, edges.points, edges.label_pos,
+    canvas_w/h, layout.scale 모두 동기 변환 — path_d 변환도 자동 보정됨.
+    """
+    if abs(factor - 1.0) < 1e-6:
+        return
+    for node in layout.nodes.values():
+        node.x *= factor
+        node.y *= factor
+        node.w *= factor
+        node.h *= factor
+    for cl in layout.clusters:
+        cl.x *= factor
+        cl.y *= factor
+        cl.w *= factor
+        cl.h *= factor
+    for edge in layout.edges:
+        edge.points = [(x * factor, y * factor) for (x, y) in edge.points]
+        if edge.label_pos is not None:
+            lx, ly = edge.label_pos
+            edge.label_pos = (lx * factor, ly * factor)
+    layout.canvas_w *= factor
+    layout.canvas_h *= factor
+    layout.scale *= factor   # path_d (SVG px) → inches 변환 계수도 동기 갱신
+
+
+def _compute_rescale_factor(
+    layout: "LayoutResult",
+    min_node_w: float = 1.0,
+    min_node_h: float = 0.4,
+    max_w: float = 12.5,
+    max_h: float = 6.3,
+) -> float:
+    """최소 노드 크기를 보장하는 rescale factor 를 계산한다.
+
+    1) 현재 노드 중 최소 폭/높이로 upscale 비율 결정.
+    2) 업스케일 후 canvas 가 max_w/max_h 초과하면 비례 축소.
+    3) factor = upscale * shrink (슬라이드 피팅 우선).
+    """
+    if not layout.nodes:
+        return 1.0
+
+    cur_min_w = min(n.w for n in layout.nodes.values())
+    cur_min_h = min(n.h for n in layout.nodes.values())
+
+    upscale_w = (min_node_w / cur_min_w) if cur_min_w < min_node_w else 1.0
+    upscale_h = (min_node_h / cur_min_h) if cur_min_h < min_node_h else 1.0
+    upscale = max(upscale_w, upscale_h)
+
+    if upscale <= 1.0:
+        return 1.0   # 이미 최소 크기 충족
+
+    new_w = layout.canvas_w * upscale
+    new_h = layout.canvas_h * upscale
+    shrink_w = max_w / new_w if new_w > max_w else 1.0
+    shrink_h = max_h / new_h if new_h > max_h else 1.0
+    shrink = min(shrink_w, shrink_h)
+
+    return upscale * shrink
+
+
+# ──────────────────────────────────────────────
 # 공개 API
 # ──────────────────────────────────────────────
 
