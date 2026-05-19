@@ -26,6 +26,17 @@ from lxml import etree
 
 logger = logging.getLogger(__name__)
 
+# E.2: mmdc SVG 레이아웃용 flowchart config — nodeSpacing/rankSpacing 확대로 화살표 뭉침 해소
+# png.py 의 _MERMAID_CONFIG["flowchart"] 와 동일 값을 유지한다.
+_MMDC_FLOWCHART_CONFIG: dict = {
+    "flowchart": {
+        "nodeSpacing": 80,   # E.2: 기본 50 → 80 (화살표 뭉침 해소)
+        "rankSpacing": 100,  # E.2: 기본 50 → 100 (rank 간 수직 여백 확대)
+        "htmlLabels": True,
+        "useMaxWidth": False,
+    }
+}
+
 
 # ──────────────────────────────────────────────
 # 데이터 모델
@@ -130,6 +141,7 @@ def _run_mmdc_to_svg(
     workdir: Path,
     puppeteer_config: Optional[str],
     timeout: int = 30,
+    mermaid_cfg: Optional[dict] = None,
 ) -> Optional[Path]:
     """mmdc로 Mermaid를 SVG로 렌더링하고 경로 반환. 실패 시 None."""
     in_path = workdir / "input.mmd"
@@ -139,6 +151,11 @@ def _run_mmdc_to_svg(
     cmd = ["mmdc", "-i", str(in_path), "-o", str(out_path), "-b", "transparent"]
     if puppeteer_config and Path(puppeteer_config).exists():
         cmd += ["-p", puppeteer_config]
+    # E.2: flowchart nodeSpacing/rankSpacing config 주입
+    cfg = mermaid_cfg if mermaid_cfg is not None else _MMDC_FLOWCHART_CONFIG
+    cfg_path = workdir / "config.json"
+    cfg_path.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
+    cmd += ["-c", str(cfg_path)]
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
