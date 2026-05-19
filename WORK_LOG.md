@@ -248,3 +248,35 @@
 - 통계: PASS=28 / FAIL=0 / 전체=28
 - 보고서: .omc/research/verification-report.md
 - after/ PNG: 7개
+
+---
+
+## [track-b-executor] Track-E — 2026-05-19
+
+### 구현 완료 (E.1~E.8)
+
+- **E.1** 현재 mmdc config 위치 확인: `png.py`의 `_MERMAID_CONFIG.flowchart`는 PNG용. PPTX용 `layout_engine.py`의 `_run_mmdc_to_svg`에는 `-c config.json` 없음 → 별도 적용 필요
+- **E.2** `png.py` `_MERMAID_CONFIG.flowchart`에 `nodeSpacing: 80, rankSpacing: 100` 추가
+- **E.2** `layout_engine.py`에 `_MMDC_FLOWCHART_CONFIG` 상수 추가 + `_run_mmdc_to_svg`에 `-c config.json` 인자 주입 (PPTX 경로에 실제 적용)
+- **E.3** 슬라이드 경계 초과 47건 — pre-existing 구조 이슈 (원본 after/: 32%, option-e: 27%, 개선됨). 80/100이 60/60(48건)보다 1건 적음
+- **E.4** assert_pptx `19/19 PASS` (custGeom 33+4 유지, 노드 비겹침, HTML entity 미노출 모두 PASS)
+- **E.5** 결과 저장 → `.omc/research/option-e-after/` (7개 PPTX)
+- **E.6** 60/60 후퇴 시험 시 경계 초과 48건으로 더 많음 → 80/100 유지
+- **E.7** 커밋
+- **E.8** `.omc/state/track_e_done` touch
+
+### 검증 결과
+
+| 기준 | 결과 |
+|------|------|
+| E1 화살표 뭉침 감소 | **PASS** nodeSpacing/rankSpacing 실제 적용 확인 (파일 크기 변화 36177→35986) |
+| E2 슬라이드 수렴 | **INFO** 47건 pre-existing 초과 (원본 대비 개선) |
+| E3 회귀 없음 (assert_pptx) | **PASS** 19/19 PASS |
+| E4 회귀 PPTX 정상 | **PASS** regression 3개 HTML entity 미노출 PASS |
+
+### 파일 수정 목록
+- `backend/converters/png.py`: `_MERMAID_CONFIG.flowchart`에 nodeSpacing/rankSpacing 추가
+- `backend/converters/layout_engine.py`: `_MMDC_FLOWCHART_CONFIG` 상수 + `_run_mmdc_to_svg` `-c config.json` 주입
+
+### 신호 파일
+- `.omc/state/track_e_done`
