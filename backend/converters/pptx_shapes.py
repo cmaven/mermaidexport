@@ -7,8 +7,10 @@
 # 생성일: 2026-04-07 | 수정일: 2026-05-18 (ER 분기 + multi-paragraph + PNG 폴백 추가)
 # ============================================================
 
+import html as _html_std
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from io import BytesIO
 from typing import Optional
@@ -1234,6 +1236,19 @@ def mermaid_to_pptx(mermaid_code: str, title: str = "") -> bytes:
         layout = None
 
     if layout is not None and layout.nodes:
+        # ER: 손상 레이아웃 감지 — 엣지가 있는데 어느 엣지도 노드 목록에 매칭 안 되면 PNG 폴백
+        if is_er and layout.edges:
+            node_ids = set(layout.nodes.keys())
+            matched = sum(
+                1 for e in layout.edges
+                if e.source in node_ids and e.target in node_ids
+            )
+            if matched == 0:
+                logger.warning(
+                    "ER 레이아웃 손상 감지 (엣지 %d개 중 노드 매칭 0개) → PNG 폴백",
+                    len(layout.edges),
+                )
+                return _render_er_png_fallback(mermaid_code, title)
         return _render_pptx_from_layout(layout, title)
 
     # ER 다이어그램: parse_mermaid는 ER 구문 미지원 → PNG 폴백
@@ -1459,11 +1474,171 @@ def _add_subgraph_box_at(
         pass
 
 
+# ──────────────────────────────────────────────
+# B.1/B.2/B.3 보조 함수: 라벨 크기 추정 + cluster bbox 재계산
+# ──────────────────────────────────────────────
+
+def _br_to_newline(text: str) -> str:
+    """<br/>, <br>, &lt;br/&gt; 패턴을 \\n으로 변환 (B.1).
+    HTML entity 형태도 처리하여 PPTX 렌더 전 사전 정규화.
+    """
+    text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'&lt;br\s*/?&gt;', '\n', text, flags=re.IGNORECASE)
+    return text
+
+
+def _estimate_required_size(
+    label: str,
+    font_pt: int = 9,
+    min_w: float = 0.7,
+    max_chars_per_line: int = 20,
+) -> tuple[float, float]:
+    """라벨 텍스트 기반 최소 필요 (width_in, height_in) 추정 (B.2).
+
+    Args:
+        label: 라벨 텍스트 (\\n 분리 가능, <br/> 미포함 가정)
+        font_pt: 폰트 크기 (포인트)
+        min_w: 최소 너비 (inches)
+        max_chars_per_line: 자동 줄바꿈 기준 글자 수
+
+    Returns:
+        (required_w, required_h) inches — layout 값과 max() 적용 필요
+    """
+    # <br/> → \\n 정규화
+    label = _br_to_newline(label)
+    raw_lines = label.split('\n') if '\n' in label else [label]
+
+    # 긴 줄 자동 줄바꿈 (단어 단위, 18자 이상)
+    lines: list[str] = []
+    for line in raw_lines:
+        if len(line) <= max_chars_per_line:
+            lines.append(line)
+        else:
+            # 단어 단위 줄바꿈 시도
+            words = line.split(' ')
+            cur = ''
+            for word in words:
+                if not cur:
+                    cur = word
+                elif len(cur) + 1 + len(word) <= max_chars_per_line:
+                    cur += ' ' + word
+                else:
+                    lines.append(cur)
+                    cur = word
+            if cur:
+                lines.append(cur)
+
+    if not lines:
+        lines = ['']
+
+    # 폰트 단위 (inches per point)
+    font_in = font_pt / 72.0
+
+    # 각 줄의 추정 너비 (유니코드 동아시아 폭 기반 휴리스틱)
+    max_line_w = 0.0
+    for line in lines:
+        lw = 0.0
+        for ch in line:
+            try:
+                eaw = unicodedata.east_asian_width(ch)
+            except Exception:
+                eaw = 'N'
+            if eaw in ('W', 'F'):        # 한글, 한자 등 full-width
+                lw += font_in * 1.05
+            elif eaw == 'A':             # Ambiguous (일부 특수문자)
+                lw += font_in * 0.75
+            else:                        # ASCII, narrow
+                lw += font_in * 0.60
+        max_line_w = max(max_line_w, lw)
+
+    H_PAD = 0.20   # 수평 패딩 (양쪽 합계)
+    V_PAD = 0.16   # 수직 패딩 (양쪽 합계)
+    LINE_H = font_in * 1.40   # 줄 간격 배율
+
+    req_w = max(min_w, max_line_w + H_PAD)
+    req_h = max(0.30, len(lines) * LINE_H + V_PAD)
+    return req_w, req_h
+
+
+def _recompute_cluster_bboxes(
+    nodes: dict,
+    clusters: list,
+    header_h: float = 0.28,
+    padding: float = 0.14,
+) -> None:
+    """노드 크기 조정 후 cluster bbox를 자식 노드 합집합으로 재계산 (B.3).
+
+    1) 각 cluster의 (x, y, w, h)를 자식 노드 bbox 합집합 + 헤더 + padding으로 갱신.
+    2) cluster 간 겹침을 y축 push-down + 자식 노드 함께 이동으로 해소.
+
+    Args:
+        nodes: LaidNode dict (cluster_id 필드 포함).
+        clusters: LaidCluster list (in-place 수정).
+        header_h: 서브그래프 타이틀 헤더 높이 (inches).
+        padding: 노드 외곽 여유 (inches).
+    """
+    # cluster id → child nodes 매핑
+    cluster_children: dict[str, list] = {cl.id: [] for cl in clusters}
+    for node in nodes.values():
+        if node.cluster_id and node.cluster_id in cluster_children:
+            cluster_children[node.cluster_id].append(node)
+
+    # 1단계: cluster bbox를 자식 노드 합집합으로 갱신
+    for cl in clusters:
+        children = cluster_children.get(cl.id, [])
+        if not children:
+            continue
+        min_x = min(n.x for n in children)
+        min_y = min(n.y for n in children)
+        max_x = max(n.x + n.w for n in children)
+        max_y = max(n.y + n.h for n in children)
+
+        cl.x = min_x - padding
+        cl.y = min_y - header_h - padding
+        cl.w = (max_x - min_x) + padding * 2
+        cl.h = (max_y - min_y) + header_h + padding * 2
+
+    # 2단계: cluster 간 겹침 해소 (반복 수렴)
+    max_iter = 15
+    changed = True
+    while changed and max_iter > 0:
+        changed = False
+        max_iter -= 1
+        n_cl = len(clusters)
+        for i in range(n_cl):
+            for j in range(i + 1, n_cl):
+                a, b = clusters[i], clusters[j]
+                ax2, ay2 = a.x + a.w, a.y + a.h
+                bx2, by2 = b.x + b.w, b.y + b.h
+                ov_x = min(ax2, bx2) - max(a.x, b.x)
+                ov_y = min(ay2, by2) - max(a.y, b.y)
+                if ov_x <= 0 or ov_y <= 0:
+                    continue
+                # 겹침 발생: 더 아래에 있는 cluster를 push-down
+                if a.y <= b.y:
+                    push_cl = b
+                    push_dy = ay2 - b.y + padding
+                    push_children = cluster_children.get(b.id, [])
+                else:
+                    push_cl = a
+                    push_dy = by2 - a.y + padding
+                    push_children = cluster_children.get(a.id, [])
+                if push_dy > 0:
+                    push_cl.y += push_dy
+                    for n in push_children:
+                        n.y += push_dy
+                    changed = True
+
+
 def _add_node_at(
     slide, x: float, y: float, w: float, h: float,
     label: str, shape: str, palette_idx: int,
 ) -> object:
-    """layout 좌표(inches)에 노드 도형을 추가하고 도형 객체 반환."""
+    """layout 좌표(inches)에 노드 도형을 추가하고 도형 객체 반환.
+    B.1: label의 <br/> → \\n 변환 후 렌더.
+    """
+    # B.1: <br/> → \\n 정규화 (PPTX multi-paragraph 렌더 활성화)
+    label = _br_to_newline(label)
     fill_c, stroke_c, text_c = _PALETTE[palette_idx % len(_PALETTE)]
     if shape == "diamond":
         return _add_diamond(slide, x, y, w, h, fill_c, stroke_c, label, text_color=text_c)
@@ -1683,23 +1858,57 @@ def _add_polyline_edge(
         _remove_shadow(conn)
 
 
-def _add_edge_label_at(slide, cx: float, cy: float, label: str) -> None:
-    """엣지 라벨을 (cx, cy) 중심으로 배치 (흰색 배경 + 슬레이트 텍스트)."""
+def _add_edge_label_at(
+    slide,
+    cx: float,
+    cy: float,
+    label: str,
+    avoid_bboxes: list | None = None,
+) -> None:
+    """엣지 라벨을 (cx, cy) 중심으로 배치 (흰색 배경 + 슬레이트 텍스트).
+
+    B.5: avoid_bboxes가 제공되면 라벨-노드 충돌 시 수직축으로 최대 4회 nudge.
+         여전히 겹치면 외곽선을 추가하여 가독성 확보.
+    """
     if not label:
         return
     # 텍스트 길이에 따른 폭 추정 (한글 한 글자 약 0.13in, 기본 0.4in)
     est_w = max(0.5, 0.08 * len(label) + 0.2)
     est_h = 0.22
+
+    # B.5: 라벨 위치 충돌 회피 (최대 4회 nudge, 0.15in씩)
+    has_conflict = False
+    if avoid_bboxes:
+        for attempt in range(5):
+            lx1, ly1 = cx - est_w / 2, cy - est_h / 2
+            lx2, ly2 = cx + est_w / 2, cy + est_h / 2
+            conflict = False
+            for bx1, by1, bx2, by2 in avoid_bboxes:
+                if lx1 < bx2 and lx2 > bx1 and ly1 < by2 and ly2 > by1:
+                    conflict = True
+                    break
+            if not conflict:
+                break
+            if attempt < 4:
+                cy += 0.15  # 아래 방향 nudge
+            else:
+                has_conflict = True   # 끝내 겹침 → 외곽선 부여
+
     txb = slide.shapes.add_textbox(
         Inches(cx - est_w / 2),
         Inches(cy - est_h / 2),
         Inches(est_w),
         Inches(est_h),
     )
-    # 배경 흰색 사각형 효과: textbox는 채우기가 없으므로 명시 부여
+    # 배경 흰색 사각형 효과
     txb.fill.solid()
     txb.fill.fore_color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
-    txb.line.fill.background()
+    if has_conflict:
+        # 여전히 겹침: 1px 외곽선으로 가독성 확보
+        txb.line.color.rgb = RGBColor(0x94, 0xA3, 0xB8)
+        txb.line.width = Pt(0.75)
+    else:
+        txb.line.fill.background()
     tf = txb.text_frame
     tf.margin_left = Pt(2)
     tf.margin_right = Pt(2)
@@ -1734,6 +1943,25 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
 
     _add_title_and_bg(slide, title)
 
+    # ── B.2: 노드 크기를 라벨에 맞게 확장 (줄어들지는 않음) ──────────────────
+    for node in layout.nodes.values():
+        req_w, req_h = _estimate_required_size(node.label)
+        node.w = max(node.w, req_w)
+        node.h = max(node.h, req_h)
+
+    # ── B.3: cluster bbox를 자식 노드 합집합으로 재계산 + 겹침 해소 ─────────
+    if layout.clusters:
+        _recompute_cluster_bboxes(layout.nodes, layout.clusters)
+        # canvas 크기를 갱신된 bbox에 맞게 확장
+        all_x2 = [n.x + n.w for n in layout.nodes.values()]
+        all_y2 = [n.y + n.h for n in layout.nodes.values()]
+        all_x2 += [cl.x + cl.w for cl in layout.clusters]
+        all_y2 += [cl.y + cl.h for cl in layout.clusters]
+        if all_x2:
+            layout.canvas_w = max(layout.canvas_w, max(all_x2))
+        if all_y2:
+            layout.canvas_h = max(layout.canvas_h, max(all_y2))
+
     # 콘텐츠 영역에 캔버스를 가운데 정렬 (오프셋)
     avail_w = SLIDE_W - 2 * MARGIN
     avail_h = SLIDE_H - TITLE_H - 2 * MARGIN
@@ -1765,8 +1993,15 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
         )
 
     # 3) 엣지 (polyline 다중 connector) — 노드 회피 라우팅 적용
-    AVOID_PADDING = 0.1
+    AVOID_PADDING = 0.08
     SUBGRAPH_TITLE_H = 0.26  # _add_subgraph_box_at의 title_h와 동일
+
+    # B.4: 전체 노드 bbox 사전 구성 (B.2 조정 크기 반영 + B.5 label nudge 재사용)
+    all_node_bboxes: dict[str, tuple[float, float, float, float]] = {
+        nid: (off_x + n.x, off_y + n.y, off_x + n.x + n.w, off_y + n.y + n.h)
+        for nid, n in layout.nodes.items()
+    }
+
     for edge in layout.edges:
         if edge.source not in shape_map or edge.target not in shape_map:
             continue
@@ -1774,17 +2009,31 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
         if len(pts) < 2:
             continue
 
-        # 회피 박스: source/target 외 모든 노드 + 모든 서브그래프 타이틀바
-        # (타이틀바는 라벨 텍스트가 있는 얇은 띠라 통과 시 시각적 충돌 발생)
-        avoid = [
-            (off_x + n.x, off_y + n.y, off_x + n.x + n.w, off_y + n.y + n.h)
-            for nid, n in layout.nodes.items()
+        # B.4: src/dst 노드의 cluster 파악
+        src_node = layout.nodes.get(edge.source)
+        dst_node = layout.nodes.get(edge.target)
+        src_cl_id = src_node.cluster_id if src_node else None
+        dst_cl_id = dst_node.cluster_id if dst_node else None
+
+        # B.4: 회피 박스 구성
+        #  - 노드: source/target 제외 모든 노드 (B.2 조정 크기 반영)
+        #  - cluster: src/dst와 무관한 cluster → 전체 박스 회피
+        #             src/dst와 관련된 cluster → 타이틀 바만 회피
+        avoid: list[tuple[float, float, float, float]] = [
+            bbox for nid, bbox in all_node_bboxes.items()
             if nid not in (edge.source, edge.target)
         ]
-        avoid.extend(
-            (off_x + cl.x, off_y + cl.y, off_x + cl.x + cl.w, off_y + cl.y + SUBGRAPH_TITLE_H)
-            for cl in layout.clusters
-        )
+        for cl in layout.clusters:
+            if cl.id not in (src_cl_id, dst_cl_id):
+                avoid.append(
+                    (off_x + cl.x, off_y + cl.y,
+                     off_x + cl.x + cl.w, off_y + cl.y + cl.h)
+                )
+            else:
+                avoid.append(
+                    (off_x + cl.x, off_y + cl.y,
+                     off_x + cl.x + cl.w, off_y + cl.y + SUBGRAPH_TITLE_H)
+                )
 
         if len(pts) == 2:
             # 단순 직선 → 전체 회피 라우팅
@@ -1804,7 +2053,15 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
         _add_polyline_edge(slide, pts, dashed=edge.dashed)
         if edge.label and edge.label_pos:
             lx, ly = edge.label_pos
-            _add_edge_label_at(slide, off_x + lx, off_y + ly, edge.label)
+            # B.5: edge label 충돌 nudge (src/dst 제외한 노드 bbox 전달)
+            label_avoid = [
+                bbox for nid, bbox in all_node_bboxes.items()
+                if nid not in (edge.source, edge.target)
+            ]
+            _add_edge_label_at(
+                slide, off_x + lx, off_y + ly, edge.label,
+                avoid_bboxes=label_avoid,
+            )
 
     output = BytesIO()
     prs.save(output)
