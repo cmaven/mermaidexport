@@ -97,3 +97,28 @@
 - **assert_pptx.py**: `_classify_shape` 신규, `assert_no_edge_label_node_overlap` 신규
 - **검증**: edge label 충돌 0건 (4/4 PASS)
 - **커밋**: c11e7e5
+
+## [track-c-verifier] 2026-05-19 11:58
+
+- track-C 검증 완료
+- 최종 판정: **PASS**
+- 통계: PASS=28 / FAIL=0 / 전체=28
+- 보고서: .omc/research/verification-report.md
+- after/ PNG: 7개
+
+## [track-c-verifier] 최종 완료 2026-05-19 11:58
+
+- **최종 판정: PASS** ✅ — 15/15 (100%), 전체 28/28
+- C.1 smoke_test_er: PASS (12/12 — simple+crd 두 케이스)
+- C.2 docker compose up/down + API 변환 + LibreOffice PNG: PASS
+- C.3 정량 어서트 15건 전체 PASS:
+  - ER (er_diagram_0,1): shape count ✅, HTML entity 미노출 ✅
+  - graph (graph_diagram_0): HTML entity ✅, 노드간비겹침 ✅, edge label 충돌 ✅, cluster포함 ✅
+  - graph (graph_diagram_1): 위 4개 모두 ✅
+  - regression (0,1,2): HTML entity 미노출 ✅
+- C.4 회귀 없음: PASS
+- C.5 code-review.md: .omc/research/code-review.md 작성 완료
+- after/ 산출물: 7개 PPTX + 7개 PNG
+
+인수 기준 VERIFIED: A1~A6, B1~B2, B4~B6, B8, C1~C2
+수동 확인 항목: B3(화살표 관통), B7(classDef 색상) — PPTX 데이터로 판별 불가
