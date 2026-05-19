@@ -2188,6 +2188,15 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
         cap_h = node.h * _MAX_EXPAND
         node.h = min(max(node.h, min_h), cap_h)
 
+    # ── D.1 (iter-5): ER entity 박스 크기 정규화 — 과대화/공백 과다 방지 ──────
+    if getattr(layout, 'is_er', False):
+        _ER_MIN_H, _ER_MAX_H = 0.8, 2.5
+        _ER_MIN_W, _ER_MAX_W = 1.5, 4.0
+        _ER_PAD = 0.15  # 내용 기준 여백
+        for node in layout.nodes.values():
+            node.h = max(_ER_MIN_H, min(node.h + _ER_PAD, _ER_MAX_H))
+            node.w = max(_ER_MIN_W, min(node.w + _ER_PAD, _ER_MAX_W))
+
     # ── B.3: cluster bbox를 자식 노드 합집합으로 재계산 + 겹침 해소 ─────────
     if layout.clusters:
         _recompute_cluster_bboxes(layout.nodes, layout.clusters)

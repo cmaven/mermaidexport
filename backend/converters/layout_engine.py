@@ -37,6 +37,17 @@ _MMDC_FLOWCHART_CONFIG: dict = {
     }
 }
 
+# iter-5 D.3: dense 그래프 (노드 ≥ 20) 용 별도 mmdc flowchart config
+_MMDC_DENSE_CONFIG: dict = {
+    "flowchart": {
+        "nodeSpacing": 40,   # 더 촘촘한 배치 (dense 다이어그램 32" 슬라이드에 효과적)
+        "rankSpacing": 40,
+        "htmlLabels": True,
+        "useMaxWidth": False,
+    }
+}
+_DENSE_NODE_THRESHOLD = 20  # 이 이상이면 dense 프리셋 사용
+
 # 동적 슬라이드 크기 결정 임계값
 _SLIDE_TIER_LARGE  = 20  # 노드+클러스터 > 이 수 → 24×13.5"
 _SLIDE_TIER_MEDIUM = 5   # 노드+클러스터 > 이 수 → 16×9"
@@ -70,6 +81,8 @@ def _suggest_slide_dims(
         # 비율 정보 없으면 16:9 반환
         return round(base_h * 16.0 / 9.0, 3), base_h
 
+    # iter-5 D.2: portrait 슬라이드 방지 — 최소 정방형(1:1) 보장
+    canvas_ratio = max(canvas_ratio, 1.0)
     # iter-4: viewBox 비율 기반 슬라이드 폭 동적 결정
     base_w = base_h * canvas_ratio
 
@@ -143,6 +156,7 @@ class LayoutResult:
     canvas_w: float = 0.0   # inches
     canvas_h: float = 0.0
     scale: float = 1.0      # px → inches 변환 계수
+    is_er: bool = False      # iter-5 D.1: ER 다이어그램 여부 (entity 박스 정규화용)
 
 
 # SVG 네임스페이스
@@ -1017,8 +1031,15 @@ def compute_layout_via_mmdc(
     try:
         with tempfile.TemporaryDirectory() as tmp:
             workdir = Path(tmp)
+            # iter-5 D.3: dense 다이어그램 (노드 ≥ 20) 은 촘촘한 spacing 프리셋 사용
+            _node_re = re.compile(r'^\s{4,}([A-Za-z_][A-Za-z0-9_]*)\s*[\[({"\']', re.MULTILINE)
+            _est_nodes = len({m for m in _node_re.findall(mermaid_code)
+                              if m not in {"subgraph", "end", "graph", "flowchart",
+                                           "style", "classDef", "linkStyle"}})
+            _mmdc_cfg = _MMDC_DENSE_CONFIG if _est_nodes >= _DENSE_NODE_THRESHOLD else None
             svg_path = _run_mmdc_to_svg(
-                mermaid_code, workdir, puppeteer_config, timeout=timeout
+                mermaid_code, workdir, puppeteer_config, timeout=timeout,
+                mermaid_cfg=_mmdc_cfg,
             )
             if svg_path is None:
                 return None
@@ -1057,6 +1078,7 @@ def compute_layout_via_mmdc(
                     canvas_w=svg_w_px * scale,
                     canvas_h=svg_h_px * scale,
                     scale=scale,
+                    is_er=True,  # iter-5 D.1: ER entity 박스 정규화 플래그
                 )
                 # iter-2: 최소 노드 크기 보장 전역 리스케일
                 rf = _compute_rescale_factor(result, max_w=target_w_in, max_h=target_h_in)

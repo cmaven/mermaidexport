@@ -429,3 +429,45 @@
 
 ### 신호 파일
 - `.omc/state/iter_4_done`
+
+---
+
+## [track-b-executor] iter-5 (final) ER 정규화 + portrait 방지 + dense 프리셋 — 2026-05-19
+
+### 구현 완료
+
+- **D.1 ER entity 박스 크기 정규화** (`layout_engine.py` + `pptx_shapes.py`):
+  - `LayoutResult.is_er: bool = False` 필드 추가
+  - ER 분기 (`compute_layout_via_mmdc`)에서 `is_er=True` 설정
+  - `_render_pptx_from_layout`: `is_er` 시 entity 박스 clamp 적용
+    - `entity_h = max(0.8", min(node.h + 0.15", 2.5"))`
+    - `entity_w = max(1.5", min(node.w + 0.15", 4.0"))`
+
+- **D.2 Portrait 슬라이드 방지** (`layout_engine.py` `_suggest_slide_dims()`):
+  - `canvas_ratio = max(canvas_ratio, 1.0)` 추가 — 세로형 슬라이드 원천 차단
+  - iter-4의 er_diagram_1 13.33"×20.0" portrait → 13.33"×13.33" 정방형으로 개선
+
+- **D.3 Dense graph 프리셋** (`layout_engine.py`):
+  - `_MMDC_DENSE_CONFIG`: nodeSpacing=40, rankSpacing=40 (조밀 배치)
+  - `_DENSE_NODE_THRESHOLD = 20`
+  - `compute_layout_via_mmdc` 내 노드 수 추정 후 ≥20이면 dense config 적용
+
+### 검증 결과
+
+| 기준 | 결과 |
+|------|------|
+| assert_pptx + custGeom | **21/21 PASS** |
+| smoke_test_er | **12/12 PASS** |
+| Portrait 슬라이드 | **0건** |
+| 슬라이드 초과 (OOB) | **0건** |
+| er_diagram_0 슬라이드 | **24.21"×9.00"** (ratio=2.69, 정상) |
+| er_diagram_1 슬라이드 | **13.33"×13.33"** (square, portrait 해소) |
+| ER shape 수 | er_0=20, er_1=9 (정상) |
+| custGeom | 26+5+2 edges PASS |
+
+### 파일 수정
+- `backend/converters/layout_engine.py`: LayoutResult.is_er, _MMDC_DENSE_CONFIG, _suggest_slide_dims portrait 방지, compute_layout_via_mmdc dense 프리셋
+- `backend/converters/pptx_shapes.py`: D.1 ER entity box clamp
+
+### 신호 파일
+- `.omc/state/iter_5_done`
