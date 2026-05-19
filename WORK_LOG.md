@@ -77,3 +77,11 @@
 - `backend/converters/pptx_shapes.py`: MSO_AUTO_SIZE 임포트, _set_text/_set_text_multiline 수정, B.2 루프 제거, 헬퍼 3개 추가, avoid list 개선
 - `backend/converters/layout_engine.py`: _extract_text_from_foreign() br.tail + html.unescape
 - `backend/test_graph.md`: 신규 생성 (회귀 테스트 샘플)
+
+## [track-c-verifier] 2026-05-19 11:45
+
+- track-C 검증 완료
+- 최종 판정: **FAIL**
+- 통계: PASS=24 / FAIL=2 / 전체=26
+- 보고서: .omc/research/verification-report.md
+- after/ PNG: 7개
