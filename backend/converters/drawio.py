@@ -323,7 +323,7 @@ def _subgraph_style_for_index(sg_idx: int) -> str:
 
 _STYLE_SOLID_EDGE = (
     "edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;"
-    "jettySize=auto;html=1;fontFamily=NanumSquare;fontSize=11;"
+    "curved=1;jettySize=auto;html=1;fontFamily=NanumSquare;fontSize=11;"
 )
 _STYLE_DASHED_EDGE = _STYLE_SOLID_EDGE + "dashed=1;dashPattern=8 4;"
 _STYLE_THICK_EDGE  = _STYLE_SOLID_EDGE + "strokeWidth=3;"
