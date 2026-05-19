@@ -1,5 +1,39 @@
 # WORK_LOG
 
+## [track-a-executor] — 2026-05-19
+
+### 구현 완료 (A.1~A.8)
+
+- **A.1** `_extract_text_from_foreign()` 에 `html.unescape()` 적용 — 커밋 61d843e (트랙 B 공유 신호)
+- **A.2** `_ER_NODE_ID_RE`: `(?:-\d+)?$` (trailing digit 선택적) + entityLabel text fallback
+- **A.3** Attribute 행 y좌표 `round(ty, 3)` → `round(ty, 1)` (동일 행 분리 방지)
+- **A.4** `pptx_shapes.py` 손상 레이아웃 감지: 엣지-노드 불일치 시 PNG 폴백
+- **A.5** `_render_er_png_fallback()` 코드 검증 + smoke_test 실행 확인
+- **A.6** `drawio.py` 손상 감지 동등 패치 / `excalidraw.py` ER 전용 분기 추가 (layout_engine 사용)
+- **A.7** `smoke_test_er()` 강화 — simple/crd 두 케이스, 12개 키 모두 OK
+- **A.8** 회귀 캡처 → `.omc/research/track-a-after/` (crd_er_after.pptx/png + simple_er_after.pptx/png)
+
+### 검증 결과 (최종)
+| 기준 | 결과 |
+|------|------|
+| A1 엔티티 박스 출력 | **PASS** shape 25 ≥ entity 8 |
+| A2 관계 선 + 라벨 | **PASS** 5개 엣지 파싱 완료 |
+| A3 엔티티 누락 없음 | **PASS** 8개 모두 출력 |
+| A4 HTML entity 리터럴 노출 | **PASS** 0건 |
+| A5 손상 layout 시 PNG 폴백 | **PASS** 감지 로직 적용 |
+| A6 smoke_test_er 4포맷 OK | **PASS** 12/12 OK |
+
+### 파일 수정 목록
+- `backend/converters/layout_engine.py`: html.unescape, 정규식 강화, fallback, y-round
+- `backend/converters/pptx_shapes.py`: 손상 layout 감지 (A.4)
+- `backend/converters/drawio.py`: 손상 layout 감지 (A.6)
+- `backend/converters/excalidraw.py`: ER 전용 분기 추가 (A.6)
+- `backend/converters/__init__.py`: smoke_test_er 강화 (A.7)
+- `.omc/research/track-a-after/`: 회귀 캡처 4파일 (A.8)
+
+---
+
+
 ## [track-b-executor] — 2026-05-19
 
 ### Phase 0 완료 (코드베이스 탐색)
