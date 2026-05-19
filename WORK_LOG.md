@@ -122,3 +122,15 @@
 
 인수 기준 VERIFIED: A1~A6, B1~B2, B4~B6, B8, C1~C2
 수동 확인 항목: B3(화살표 관통), B7(classDef 색상) — PPTX 데이터로 판별 불가
+
+## [track-b-executor] Fix Loop 2 — 2026-05-19
+
+### B2/B7 노드 가독성 + classDef (Task #6)
+- **B2 MSO_AUTO_SIZE 제거**: TEXT_TO_FIT_SHAPE → auto_size=None, word_wrap=True
+- **B2 최소 높이 보장**: n_lines×0.22+0.06in (캡: 원본×2.2배 이내)
+  - 0.13in → 0.28in (1줄), 0.19in → 0.418in (2줄) — 겹침 없음 확인
+- **B7 classDef 파싱**: `_parse_class_overrides()` — classDef/class/:::인라인 지원
+  - fill_override/text_color_override → _add_node_at에서 팔레트보다 우선 적용
+  - 테스트: 노드A fill=FF0000 (red 클래스 정상 적용)
+- **검증**: 8/8 PASS (edge label 충돌 0건, 노드 비겹침, HTML entity 0건)
+- **커밋**: ca647d1
