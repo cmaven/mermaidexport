@@ -1876,23 +1876,32 @@ def _add_edge_label_at(
     est_w = max(0.5, 0.08 * len(label) + 0.2)
     est_h = 0.22
 
-    # B.5: 라벨 위치 충돌 회피 (최대 4회 nudge, 0.15in씩)
+    # B.5: 라벨 위치 충돌 회피 — 양방향(위/아래) nudge, 최대 12회, 0.25in씩
     has_conflict = False
     if avoid_bboxes:
-        for attempt in range(5):
-            lx1, ly1 = cx - est_w / 2, cy - est_h / 2
-            lx2, ly2 = cx + est_w / 2, cy + est_h / 2
-            conflict = False
-            for bx1, by1, bx2, by2 in avoid_bboxes:
-                if lx1 < bx2 and lx2 > bx1 and ly1 < by2 and ly2 > by1:
-                    conflict = True
-                    break
+        # nudge 방향 패턴: 0, -0.25, +0.25, -0.5, +0.5, -0.75, +0.75, ...
+        nudge_seq = [0.0]
+        for step in range(1, 7):
+            nudge_seq.append(-step * 0.25)
+            nudge_seq.append(+step * 0.25)
+
+        best_cy = cy
+        resolved = False
+        for delta in nudge_seq:
+            trial_cy = cy + delta
+            lx1 = cx - est_w / 2; ly1 = trial_cy - est_h / 2
+            lx2 = cx + est_w / 2; ly2 = trial_cy + est_h / 2
+            conflict = any(
+                lx1 < bx2 and lx2 > bx1 and ly1 < by2 and ly2 > by1
+                for bx1, by1, bx2, by2 in avoid_bboxes
+            )
             if not conflict:
+                best_cy = trial_cy
+                resolved = True
                 break
-            if attempt < 4:
-                cy += 0.15  # 아래 방향 nudge
-            else:
-                has_conflict = True   # 끝내 겹침 → 외곽선 부여
+        cy = best_cy
+        if not resolved:
+            has_conflict = True  # 모든 시도 실패 → 외곽선 부여
 
     txb = slide.shapes.add_textbox(
         Inches(cx - est_w / 2),
