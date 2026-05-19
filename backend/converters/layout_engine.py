@@ -42,6 +42,8 @@ class LaidNode:
     h: float
     cluster_id: Optional[str] = None
     shape: str = "rect"
+    fill_override: Optional[str] = None       # classDef fill 색 (#rrggbb)
+    text_color_override: Optional[str] = None  # classDef color 색 (#rrggbb)
 
 
 @dataclass

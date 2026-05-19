@@ -536,7 +536,7 @@ def _set_text_multiline(
     lines = [ln for ln in text.split("\n") if ln.strip()]
     tf = shape.text_frame
     tf.word_wrap = True
-    tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE  # B.2: 넘칠 경우 폰트 자동 축소
+    tf.auto_size = None  # 폰트 자동 축소 비활성화 — 박스를 확장해 가독성 보장
     tf.margin_top = Pt(3)
     tf.margin_bottom = Pt(2)
     tf.margin_left = Pt(4)
@@ -1249,6 +1249,9 @@ def mermaid_to_pptx(mermaid_code: str, title: str = "") -> bytes:
                     len(layout.edges),
                 )
                 return _render_er_png_fallback(mermaid_code, title)
+        # B.7: classDef + class 파싱 → fill_override 적용
+        if not is_er:
+            _parse_class_overrides(mermaid_code, layout.nodes)
         return _render_pptx_from_layout(layout, title)
 
     # ER 다이어그램: parse_mermaid는 ER 구문 미지원 → PNG 폴백
@@ -1475,8 +1478,55 @@ def _add_subgraph_box_at(
 
 
 # ──────────────────────────────────────────────
-# B.1/B.2/B.3 보조 함수: 라벨 크기 추정 + cluster bbox 재계산
+# B.1/B.2/B.3/B.7 보조 함수
 # ──────────────────────────────────────────────
+
+def _parse_class_overrides(mermaid_code: str, nodes: dict) -> None:
+    """B.7: mermaid classDef + class 문을 파싱해 LaidNode.fill_override 적용.
+
+    지원 문법:
+      classDef <name> fill:#xxx[,color:#yyy][,stroke:#zzz]
+      class <nodeId>[,<nodeId>...] <name>
+      <nodeId>:::<name>   (inline class 선언)
+    """
+    class_styles: dict[str, dict[str, str]] = {}
+
+    for line in mermaid_code.split('\n'):
+        line = line.strip()
+        # classDef 선언
+        m = re.match(r'classDef\s+(\w+)\s+(.*)', line)
+        if m:
+            cname, style_str = m.group(1), m.group(2)
+            styles: dict[str, str] = {}
+            for part in style_str.split(','):
+                part = part.strip()
+                if ':' in part:
+                    k, v = part.split(':', 1)
+                    styles[k.strip()] = v.strip()
+            class_styles[cname] = styles
+
+    for line in mermaid_code.split('\n'):
+        line = line.strip()
+        # class 할당: class A,B,C name
+        m = re.match(r'^class\s+([\w,\s\-]+)\s+(\w+)\s*$', line)
+        if m:
+            node_ids = [n.strip() for n in m.group(1).split(',')]
+            cname = m.group(2)
+            styles = class_styles.get(cname, {})
+            for nid in node_ids:
+                if nid in nodes and styles:
+                    nodes[nid].fill_override = styles.get('fill')
+                    nodes[nid].text_color_override = styles.get('color')
+
+    # inline class: nodeId:::className
+    for line in mermaid_code.split('\n'):
+        m = re.findall(r'(\w+):::(\w+)', line)
+        for nid, cname in m:
+            if nid in nodes and cname in class_styles:
+                styles = class_styles[cname]
+                nodes[nid].fill_override = styles.get('fill')
+                nodes[nid].text_color_override = styles.get('color')
+
 
 def _br_to_newline(text: str) -> str:
     """<br/>, <br>, &lt;br/&gt; 패턴을 \\n으로 변환 (B.1).
@@ -1633,13 +1683,27 @@ def _recompute_cluster_bboxes(
 def _add_node_at(
     slide, x: float, y: float, w: float, h: float,
     label: str, shape: str, palette_idx: int,
+    fill_override: str | None = None,
+    text_color_override: str | None = None,
 ) -> object:
     """layout 좌표(inches)에 노드 도형을 추가하고 도형 객체 반환.
     B.1: label의 <br/> → \\n 변환 후 렌더.
+    B.7: fill_override / text_color_override 가 있으면 classDef 색 우선 적용.
     """
     # B.1: <br/> → \\n 정규화 (PPTX multi-paragraph 렌더 활성화)
     label = _br_to_newline(label)
     fill_c, stroke_c, text_c = _PALETTE[palette_idx % len(_PALETTE)]
+    # B.7: classDef 색 우선 적용
+    if fill_override:
+        try:
+            fill_c = _hex_to_rgb(fill_override)
+        except Exception:
+            pass
+    if text_color_override:
+        try:
+            text_c = _hex_to_rgb(text_color_override)
+        except Exception:
+            pass
     if shape == "diamond":
         return _add_diamond(slide, x, y, w, h, fill_c, stroke_c, label, text_color=text_c)
     if shape == "circle":
@@ -1952,8 +2016,17 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
 
     _add_title_and_bg(slide, title)
 
-    # ── B.2: 폰트 자동 축소로 처리 (MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE, _set_text 참고)
-    #         노드 크기 확장은 제거 — dagre 레이아웃 충돌 방지 ──────────────────
+    # ── B.2: 노드 최소 높이 보장 — dagre 폰트 크기 차이 보정 ──────────────────
+    # auto_size=None + word_wrap=True → 라벨을 줄 바꿈으로 표시, 폰트 축소 없음
+    # 최소 높이 = 라인 수 × 0.22in + 0.06in, 상한 = 원본 × 2.2배 (겹침 방지)
+    _MIN_LINE_H = 0.22
+    _VMARGIN    = 0.06
+    _MAX_EXPAND = 2.2  # 원본 높이 대비 최대 확장 비율
+    for node in layout.nodes.values():
+        n_lines = max(1, node.label.count('\n') + 1)
+        min_h = _MIN_LINE_H * n_lines + _VMARGIN
+        cap_h = node.h * _MAX_EXPAND
+        node.h = min(max(node.h, min_h), cap_h)
 
     # ── B.3: cluster bbox를 자식 노드 합집합으로 재계산 + 겹침 해소 ─────────
     if layout.clusters:
@@ -1996,6 +2069,8 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
             slide,
             off_x + node.x, off_y + node.y, node.w, node.h,
             node.label, node.shape, palette_idx,
+            fill_override=node.fill_override,
+            text_color_override=node.text_color_override,
         )
 
     # 3) 엣지 (polyline 다중 connector) — 노드 회피 라우팅 적용
