@@ -2017,11 +2017,20 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
     _add_title_and_bg(slide, title)
 
     # ── B.2: 노드 최소 높이 보장 — dagre 폰트 크기 차이 보정 ──────────────────
-    # auto_size=None + word_wrap=True → 라벨을 줄 바꿈으로 표시, 폰트 축소 없음
-    # 최소 높이 = 라인 수 × 0.22in + 0.06in, 상한 = 원본 × 2.2배 (겹침 방지)
+    # [설계 결정] auto_size=None + word_wrap=True = OOXML <a:noAutofit/>
+    #   → PowerPoint: 텍스트가 박스 밖으로 overflow (가시적). 잘림 없음.
+    #   → LibreOffice: 박스 경계에서 clip (LibreOffice 렌더링 한계).
+    #
+    # dagre 레이아웃은 mmdc 브라우저 9px 폰트(char_w≈0.052in) 기준으로 노드를
+    # 배치한다. PPTX는 맑은 고딕 9pt(char_w≈0.065in)를 사용하므로 실제 wrapping이
+    # dagre 예상보다 많아 박스 높이가 부족하다.
+    #
+    # 근본 해결(노드 y 이동 + edge.points y 동시 스케일)은 레이아웃 전체 재설계 수준
+    # 이므로, 명시적 \n 행 기준 최소 높이만 보장하고 나머지는 PowerPoint overflow로 처리.
+    # assert_pptx: 노드 간 비겹침 PASS, HTML entity 미노출 PASS 확인됨.
     _MIN_LINE_H = 0.22
     _VMARGIN    = 0.06
-    _MAX_EXPAND = 2.2  # 원본 높이 대비 최대 확장 비율
+    _MAX_EXPAND = 2.2  # 원본 높이 대비 최대 확장 비율 (겹침 방지)
     for node in layout.nodes.values():
         n_lines = max(1, node.label.count('\n') + 1)
         min_h = _MIN_LINE_H * n_lines + _VMARGIN

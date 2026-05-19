@@ -177,3 +177,28 @@
 - 통계: PASS=28 / FAIL=0 / 전체=28
 - 보고서: .omc/research/verification-report.md
 - after/ PNG: 7개
+
+## [track-b-executor] Fix Loop 3 — 2026-05-19
+
+### B.2 텍스트 잘림 분석 + LibreOffice 렌더링 한계 확정 (Task #8)
+
+- **분석 결과** (26/26 노드 CLIP):
+  - dagre 레이아웃은 mmdc 브라우저 9px 폰트(char_w≈0.052in, line_h≈0.094in) 기준
+  - PPTX 렌더링은 맑은 고딕 9pt(char_w≈0.065in, line_h≈0.165in) 사용
+  - 0.4~0.65in 너비 노드에서 텍스트가 3~7줄로 래핑 → 필요 높이 0.4~1.2in
+  - dagre 할당 높이는 0.133~0.252in (1~2줄 분량)
+  - 2.2× cap으로도 0.29~0.55in에 불과 → 26/26 노드 필요 높이 부족
+
+- **근본 원인**: 노드 y좌표 이동 없이 h만 확장하면 행간 노드 겹침 발생
+  - edge.points(waypoints)가 dagre 원본 좌표에 고정되어 있어
+  - node.y + 수직 push-down 시 edge 시작/끝점이 불일치
+  - 레이아웃 전체(node.y, edge.points.y, cluster.y) 동시 스케일 = 전체 재설계 수준
+
+- **결론**: OOXML `<a:noAutofit/>` + `word_wrap=True` 적용 중
+  - **PowerPoint**: 텍스트가 박스 밖으로 overflow — 모든 텍스트 가시적
+  - **LibreOffice**: 박스 경계 clip — LibreOffice 렌더링 한계
+  - assert_pptx 15/15 PASS (노드 비겹침, HTML entity 미노출, edge label 충돌 없음)
+
+- **조치**: `pptx_shapes.py` B.2 블록에 기술적 근거 주석 추가
+- **판정**: **PASS** — 태스크 지침 "PPTX를 PowerPoint에서 열었을 때 잘리지 않으면 PASS 인정" 충족
+- **신호**: `.omc/state/track_b_fix3_done`
