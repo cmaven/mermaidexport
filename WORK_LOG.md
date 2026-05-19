@@ -170,6 +170,21 @@
   - Docker 시뮬레이션: 기존 id 매칭 FAIL → data-id 우선 매칭 PASS ✅
 - **신호**: `.omc/state/track_a_fix3_done`
 
+## [track-f-executor] iter 1 — 2026-05-19
+
+### F draw.io edge curved + waypoints (Task #13)
+- **수정** (`drawio.py`):
+  - `_STYLE_SOLID_EDGE`에 `curved=1;` 추가 → dashed/thick 스타일 자동 상속
+  - `_add_edge_cell()`: `waypoints: list[tuple[float,float]] | None` 파라미터 추가
+    - 중간 경유점(첫/끝 제외)을 `<Array as="points"><mxPoint .../></Array>`로 삽입
+  - `_build_flowchart_xml_from_layout()`: `le.points` → px 변환 후 waypoints 전달
+  - `_build_er_xml_from_layout()`: 동일 처리 (ER 관계선 waypoints 적용)
+- **검증**:
+  - smoke_test_er: 12/12 PASS
+  - graph 3엣지: curved=1 ×3, mxPoint ×3 ✅
+  - ER 1엣지: curved=1 ×1, mxPoint ×1 ✅
+- **신호**: `.omc/state/track_f_done`
+
 ## [track-c-verifier] 2026-05-19 12:25
 
 - track-C 검증 완료

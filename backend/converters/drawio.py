@@ -932,9 +932,14 @@ def _build_flowchart_xml_from_layout(layout, edges: list, title: str) -> str:
             if not src_cid or not tgt_cid:
                 continue
             style = _STYLE_DASHED_EDGE if le.dashed else _STYLE_SOLID_EDGE
+            # le.points는 inches 단위 — px로 변환 후 waypoints 삽입
+            wpts = [
+                (_DRAWIO_PADDING + x * _INCH_TO_PX, _DRAWIO_PADDING + y * _INCH_TO_PX)
+                for x, y in le.points
+            ] if le.points else None
             _add_edge_cell(
                 root, src_cid, tgt_cid, le.label, style,
-                parent="1", next_id=next_id,
+                parent="1", next_id=next_id, waypoints=wpts,
             )
     else:
         for edge in edges:
@@ -1014,9 +1019,13 @@ def _build_er_xml_from_layout(layout, title: str) -> str:
         if not src_cid or not tgt_cid:
             continue
         edge_style = _STYLE_DASHED_EDGE if le.dashed else _STYLE_SOLID_EDGE
+        wpts = [
+            (_DRAWIO_PADDING + x * _INCH_TO_PX, _DRAWIO_PADDING + y * _INCH_TO_PX)
+            for x, y in le.points
+        ] if le.points else None
         _add_edge_cell(
             root, src_cid, tgt_cid, le.label, edge_style,
-            parent="1", next_id=next_id,
+            parent="1", next_id=next_id, waypoints=wpts,
         )
 
     return _serialize_xml(mxfile)
