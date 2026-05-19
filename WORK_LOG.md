@@ -123,6 +123,20 @@
 인수 기준 VERIFIED: A1~A6, B1~B2, B4~B6, B8, C1~C2
 수동 확인 항목: B3(화살표 관통), B7(classDef 색상) — PPTX 데이터로 판별 불가
 
+## [track-a-executor] Fix Loop 2 — 2026-05-19
+
+### A2 ER 관계선 PPTX 표시 (Task #5)
+- **원인**: `_add_polyline_edge()` line width 1.2pt → LibreOffice 렌더링 불충분, 수직 connector ex_emu+1(1 EMU) → LibreOffice 미렌더링
+- **수정**:
+  - `line_w = Pt(1.2)` → `Pt(2.0)` (2pt 이상 요건 충족)
+  - `ex_emu += 1` → `ex_emu += 9144` (1px=9144 EMU, 수직선 LibreOffice 렌더링 보장)
+  - `ey_emu += 1` → `ey_emu += 9144` (수평선 동일 처리)
+- **검증**:
+  - smoke_test_er: 12/12 PASS
+  - connector: 10개 (5 엣지 × 2 seg), 모두 2.0pt ✅
+  - edge label textbox: 5개 배치 ✅ (creates ×2, 1:1 per node, triggers, contains)
+- **신호**: `.omc/state/track_a_fix2_done`
+
 ## [track-b-executor] Fix Loop 2 — 2026-05-19
 
 ### B2/B7 노드 가독성 + classDef (Task #6)
