@@ -5,12 +5,13 @@
 #       PPTX/Draw.io 변환기가 이 결과를 받아 dagre 품질의 레이아웃을
 #       그대로 재현한다. 실패 시 None 반환 → 호출자가 기존 그리드 폴백.
 #       erDiagram도 지원 — 엔티티 박스/Attribute 행/관계 cardinality 추출.
-# 생성일: 2026-05-18 | 수정일: 2026-05-18
+# 생성일: 2026-05-18 | 수정일: 2026-05-19
 # ============================================================
 
 from __future__ import annotations
 
 import base64
+import html as _html_mod
 import json
 import logging
 import re
@@ -88,7 +89,8 @@ _EDGE_ID_RE = re.compile(r"L_(.+?)_(.+?)_\d+$")
 _CLUSTER_ID_PREFIX_RE = re.compile(r"^[A-Za-z][\w-]*?-(.+)$")
 
 # ER 다이어그램: 엔티티 노드 id 패턴 — entity-{ENTITY_NAME}-{idx}
-_ER_NODE_ID_RE = re.compile(r"^entity-(.+?)-\d+$")
+# mmdc 버전에 따라 trailing -\d+ 가 없을 수도 있으므로 선택적으로 처리
+_ER_NODE_ID_RE = re.compile(r"^entity-(.+?)(?:-\d+)?$")
 # ER 다이어그램: 엣지 id 패턴 — id_entity-{SRC}-X_entity-{DST}-Y_{seq}
 _ER_EDGE_ID_RE = re.compile(r"^id_entity-(.+?)-\d+_entity-(.+?)-\d+_\d+$")
 # ER 노드 외곽 박스를 그리는 path의 첫 M 절대좌표 추출용 (entityBox path)
@@ -187,14 +189,19 @@ def _parse_translate(transform_attr: str) -> tuple[float, float]:
 
 
 def _extract_text_from_foreign(elem: etree._Element) -> str:
-    """foreignObject 안의 모든 텍스트 노드를 모아 한 줄로 반환."""
+    """foreignObject 안의 모든 텍스트 노드를 모아 html.unescape 후 반환.
+
+    SVG foreignObject 안 HTML 콘텐츠는 XML 파서가 &amp;lt; → &lt; 로 한 번
+    언이스케이프하지만, HTML entity(&lt; → <)는 그대로 남는다.
+    html.unescape()로 최종 사람이 읽을 수 있는 문자열로 변환한다.
+    """
     texts: list[str] = []
     for t in elem.iter():
         if t.text:
             s = t.text.strip()
             if s:
                 texts.append(s)
-    return " ".join(texts)
+    return _html_mod.unescape(" ".join(texts))
 
 
 def _strip_svg_id_prefix(svg_id: str, root_prefix: str = "") -> str:
@@ -578,8 +585,15 @@ def _parse_er_nodes(
 
     엔티티명을 ID로 사용한다 (mermaid ER에서는 엔티티명이 곧 식별자).
     label은 '엔티티이름\\n타입 이름\\n타입 이름...' 형태의 멀티라인 문자열.
+
+    1차: _ER_NODE_ID_RE (entity-{NAME}-{idx} 또는 entity-{NAME}) 로 매칭.
+    2차 fallback: class="node" + <g class="label name"> 안 entityLabel / nodeLabel 텍스트로
+               엔티티 이름을 추출 (mmdc 버전 변경 대응).
     """
     nodes: dict[str, LaidNode] = {}
+
+    # 1차: ID 정규식 매칭
+    candidate_gs: list[tuple[str, etree._Element]] = []
     for g in root.iter(f"{_SVG}g"):
         cls = g.get("class") or ""
         if "node" not in cls.split():
@@ -589,6 +603,28 @@ def _parse_er_nodes(
         if not m:
             continue
         entity_name = m.group(1)
+        candidate_gs.append((entity_name, g))
+
+    # 2차 fallback: 정규식 매칭 실패 시 entityLabel / nodeLabel 텍스트로 추출
+    if not candidate_gs:
+        logger.debug("ER 노드 ID 정규식 매칭 없음 → entityLabel 텍스트 fallback 시도")
+        for g in root.iter(f"{_SVG}g"):
+            cls = g.get("class") or ""
+            if "node" not in cls.split():
+                continue
+            # label name g 에서 텍스트 추출
+            for child in g.iter(f"{_SVG}g"):
+                child_cls = (child.get("class") or "").strip()
+                if child_cls in ("label name", "label"):
+                    name_text = _er_node_text_from_label(child)
+                    if name_text and len(name_text) > 1:
+                        candidate_gs.append((name_text, g))
+                        break
+
+    for entity_name, g in candidate_gs:
+        # 이미 처리된 엔티티 스킵
+        if entity_name in nodes:
+            continue
 
         # transform translate(cx, cy) — 중심 좌표
         cx, cy = _parse_translate(g.get("transform") or "")
@@ -615,7 +651,7 @@ def _parse_er_nodes(
                         break
 
         # Attribute 행 수집: 동일 transform y 값별로 (type, name, keys, comment) 4-튜플
-        # 키: y(소수점 3자리 라운드), 값: dict[ "type"/"name"/"keys"/"comment" ] = text
+        # 키: y(소수점 1자리 라운드) — mmdc가 동일 행에서 소수점 미세 차이를 줄 수 있어 3에서 1로 완화
         rows: dict[float, dict[str, str]] = {}
         for child in g.iter(f"{_SVG}g"):
             child_cls = (child.get("class") or "").strip()
@@ -623,7 +659,7 @@ def _parse_er_nodes(
                 continue
             kind = child_cls.split("attribute-", 1)[1].strip()
             _, ty = _parse_translate(child.get("transform") or "")
-            key = round(ty, 3)
+            key = round(ty, 1)
             text = _er_node_text_from_label(child)
             row = rows.setdefault(key, {})
             row[kind] = text
