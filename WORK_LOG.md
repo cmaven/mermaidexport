@@ -85,3 +85,15 @@
 - 통계: PASS=24 / FAIL=2 / 전체=26
 - 보고서: .omc/research/verification-report.md
 - after/ PNG: 7개
+
+## [track-b-executor] Fix Loop 1 — 2026-05-19
+
+### B.4 edge label 충돌 해소 (Task #4)
+- **원인**: nudge 범위 부족(±0.15×4), label_avoid에 src/dst 노드 미포함, 라벨 간 상호 회피 없음
+- **수정**:
+  - `_add_edge_label_at`: 양방향 nudge ±0.25in × 12회 (위/아래 교번)
+  - `placed_label_bboxes`: 배치된 edge label끼리 상호 회피
+  - `label_avoid`: 모든 노드(src/dst 포함) + 비관련 cluster bbox
+- **assert_pptx.py**: `_classify_shape` 신규, `assert_no_edge_label_node_overlap` 신규
+- **검증**: edge label 충돌 0건 (4/4 PASS)
+- **커밋**: c11e7e5
