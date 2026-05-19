@@ -157,6 +157,19 @@
 - 보고서: .omc/research/verification-report.md
 - after/ PNG: 7개
 
+## [track-a-executor] Fix Loop 3 (final) — 2026-05-19
+
+### A2 ER 관계선 근본 원인 수정 (Task #7)
+- **근본 원인**: Docker 환경 mmdc가 SVG root id를 prefix로 붙여 path id 변형 → `_ER_EDGE_ID_RE` 매칭 실패 → 모든 ER edge 무시
+- **수정** (`layout_engine.py` `_parse_er_edges()`):
+  - `svg_id = path.get("id")` → `data_id = path.get("data-id") or path.get("id") or ""`
+  - `_ER_EDGE_ID_RE.match(svg_id)` → `.match(data_id)`
+  - `edge_data_id = path.get("data-id") or svg_id` → `edge_data_id = data_id`
+- **검증**:
+  - smoke_test_er: 12/12 PASS (로컬 회귀 없음)
+  - Docker 시뮬레이션: 기존 id 매칭 FAIL → data-id 우선 매칭 PASS ✅
+- **신호**: `.omc/state/track_a_fix3_done`
+
 ## [track-c-verifier] 2026-05-19 12:25
 
 - track-C 검증 완료

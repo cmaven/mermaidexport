@@ -753,13 +753,15 @@ def _parse_er_edges(
         cls = path.get("class") or ""
         if "relationshipLine" not in cls:
             continue
-        svg_id = path.get("id") or ""
-        m = _ER_EDGE_ID_RE.match(svg_id)
+        # Docker 환경에서 mmdc가 SVG root id를 prefix로 붙여 path id가 변형될 수 있음.
+        # data-id는 prefix 없이 원본 id를 유지하므로 우선 사용, 없으면 id로 폴백.
+        data_id = path.get("data-id") or path.get("id") or ""
+        m = _ER_EDGE_ID_RE.match(data_id)
         if not m:
             continue
         src, dst = m.group(1), m.group(2)
 
-        edge_data_id = path.get("data-id") or svg_id
+        edge_data_id = data_id
 
         # 좌표 시퀀스
         b64 = path.get("data-points") or ""
