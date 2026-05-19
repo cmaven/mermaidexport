@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 from pptx import Presentation
 from pptx.dml.color import RGBColor
-from pptx.enum.text import PP_ALIGN
+from pptx.enum.text import PP_ALIGN, MSO_AUTO_SIZE
 from pptx.enum.shapes import MSO_CONNECTOR, MSO_SHAPE
 from pptx.util import Inches, Pt
 from pptx.oxml.ns import qn
@@ -479,10 +479,10 @@ def _set_shape_fill(shape, fill_color: RGBColor, stroke_color: RGBColor) -> None
 
 def _set_text(shape, text: str, font_size: int = 9, bold: bool = False,
               color: RGBColor = RGBColor(0x1E, 0x29, 0x3B)) -> None:
-    """도형의 텍스트 프레임을 설정한다."""
+    """도형의 텍스트 프레임을 설정한다. B.2: 텍스트가 넘칠 경우 폰트 자동 축소."""
     tf = shape.text_frame
     tf.word_wrap = True
-    tf.auto_size = None
+    tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
     tf.margin_top = Pt(2)
     tf.margin_bottom = Pt(2)
     tf.margin_left = Pt(4)
@@ -536,7 +536,7 @@ def _set_text_multiline(
     lines = [ln for ln in text.split("\n") if ln.strip()]
     tf = shape.text_frame
     tf.word_wrap = True
-    tf.auto_size = None
+    tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE  # B.2: 넘칠 경우 폰트 자동 축소
     tf.margin_top = Pt(3)
     tf.margin_bottom = Pt(2)
     tf.margin_left = Pt(4)
@@ -1943,11 +1943,8 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
 
     _add_title_and_bg(slide, title)
 
-    # ── B.2: 노드 크기를 라벨에 맞게 확장 (줄어들지는 않음) ──────────────────
-    for node in layout.nodes.values():
-        req_w, req_h = _estimate_required_size(node.label)
-        node.w = max(node.w, req_w)
-        node.h = max(node.h, req_h)
+    # ── B.2: 폰트 자동 축소로 처리 (MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE, _set_text 참고)
+    #         노드 크기 확장은 제거 — dagre 레이아웃 충돌 방지 ──────────────────
 
     # ── B.3: cluster bbox를 자식 노드 합집합으로 재계산 + 겹침 해소 ─────────
     if layout.clusters:

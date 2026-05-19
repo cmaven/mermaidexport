@@ -189,19 +189,35 @@ def _parse_translate(transform_attr: str) -> tuple[float, float]:
 
 
 def _extract_text_from_foreign(elem: etree._Element) -> str:
-    """foreignObject 안의 모든 텍스트 노드를 모아 html.unescape 후 반환.
+    """foreignObject 안의 텍스트를 수집: html.unescape + <br/> → \\n 처리.
 
-    SVG foreignObject 안 HTML 콘텐츠는 XML 파서가 &amp;lt; → &lt; 로 한 번
-    언이스케이프하지만, HTML entity(&lt; → <)는 그대로 남는다.
-    html.unescape()로 최종 사람이 읽을 수 있는 문자열로 변환한다.
+    lxml은 <br/>를 요소로 파싱하고, <br/>뒤 텍스트를 element.tail에 저장한다.
+    기존 code가 .text만 수집해 <br/>뒤 텍스트가 소실되는 버그를 수정한다.
+
+    처리 규칙:
+     - t.text → 일반 텍스트 (공백 제거 후 추가)
+     - t.tag가 br (네임스페이스 무시) → t.tail을 \\n 접두어로 추가
+     - 기타 t.tail → 공백으로 이어 붙임
     """
-    texts: list[str] = []
+    parts: list[str] = []
     for t in elem.iter():
+        # element 자체 텍스트
         if t.text:
             s = t.text.strip()
             if s:
-                texts.append(s)
-    return _html_mod.unescape(" ".join(texts))
+                parts.append(s)
+        # element tail (element 닫힘 태그 뒤 텍스트)
+        if t.tail:
+            s = t.tail.strip()
+            if s:
+                tag_local = t.tag.split("}")[-1].lower() if "}" in str(t.tag) else str(t.tag).lower()
+                if tag_local == "br":
+                    parts.append("\n" + s)
+                else:
+                    parts.append(" " + s)
+
+    raw = "".join(parts).strip()
+    return _html_mod.unescape(raw)
 
 
 def _strip_svg_id_prefix(svg_id: str, root_prefix: str = "") -> str:
