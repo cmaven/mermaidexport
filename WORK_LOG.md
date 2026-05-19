@@ -377,3 +377,55 @@
 
 ### 신호 파일
 - `.omc/state/iter_3_done`
+
+---
+
+## [track-b-executor] iter-4 aspect ratio 비율 적응 + clamp 강화 — 2026-05-19
+
+### 구현 완료
+
+- **`_suggest_slide_dims()` canvas_ratio 파라미터 추가** (`layout_engine.py`):
+  - 시그니처: `_suggest_slide_dims(node_count, cluster_count=0, canvas_ratio=None)`
+  - `canvas_ratio` = `layout.canvas_w / layout.canvas_h` (viewBox 가로/세로 비율)
+  - 비율 기반 슬라이드 폭 계산: `base_w = base_h × canvas_ratio`
+  - MAX 클램프: 32"×20" 이내 (순환 방지: MIN 스케일 적용 시 MAX 동시 적용)
+  - MIN 보장: 13.333"×7.5" 이상
+
+- **canvas_ratio 전달** (`pptx_shapes.py` `_render_pptx_from_layout`):
+  - B.2/B.3 처리 후 `canvas_ratio = layout.canvas_w / layout.canvas_h` 계산
+  - `_suggest_slide_dims()` 에 전달하여 viewBox 비율 반영 슬라이드 생성
+
+- **edge label 위치 클램프 강화** (`pptx_shapes.py`):
+  - `_add_edge_label_at()` 호출 전 `_clamp_pos()` 적용
+  - 음수 좌표 / 슬라이드 초과 좌표 강제 클램프
+  - er_diagram_0 TextBox 음수 좌표 문제 해소
+
+- **drawio.py**: 이미 `layout.canvas_w/h` 기반 동적 page size 계산 → 변경 불필요
+
+### 적응 결과 (iter-4-after 기준)
+
+| 다이어그램 | 슬라이드 크기 | 비율 | OOB |
+|------|------|------|------|
+| graph_diagram_0 (NPU TB, 26+nodes) | 32"×7.5" | 4.27 | 0 |
+| graph_diagram_1 (simple LR, 4nodes) | 32"×7.5" | 4.27 | 0 |
+| er_diagram_0 (CRD ER) | 29.44"×9.0" | 3.27 | 0 |
+| er_diagram_1 (simple ER) | 13.33"×20.0" | 0.67 | 0 |
+| regression_diagram_0 (TB+subgraph) | 13.33"×13.34" | 1.00 | 0 |
+| regression_diagram_1 (sequence) | 13.33"×7.5" | 1.78 | 0 |
+| regression_diagram_2 (LR pipeline) | 32"×7.5" | 4.27 | 0 |
+
+### 검증 결과
+
+| 기준 | 결과 |
+|------|------|
+| assert_pptx | **15/15 PASS** |
+| custGeom | **8/8 PASS** |
+| smoke_test_er | **12/12 PASS** |
+| 슬라이드 초과 | **0건** |
+
+### 파일 수정
+- `backend/converters/layout_engine.py`: `_suggest_slide_dims()` canvas_ratio 파라미터 추가
+- `backend/converters/pptx_shapes.py`: canvas_ratio 계산 전달 + edge label 클램프 강화
+
+### 신호 파일
+- `.omc/state/iter_4_done`

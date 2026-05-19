@@ -2201,8 +2201,9 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
         if all_y2:
             layout.canvas_h = max(layout.canvas_h, max(all_y2))
 
-    # ── iter-3: 동적 슬라이드 크기 + 캔버스 업스케일 ────────────────────────
-    slide_w, slide_h = _suggest_slide_dims(len(layout.nodes), len(layout.clusters))
+    # ── iter-3/4: 동적 슬라이드 크기 + viewBox 비율 적응 + 캔버스 업스케일 ───
+    canvas_ratio = (layout.canvas_w / layout.canvas_h) if layout.canvas_h > 0 else None
+    slide_w, slide_h = _suggest_slide_dims(len(layout.nodes), len(layout.clusters), canvas_ratio=canvas_ratio)
     avail_w = slide_w - 2 * MARGIN
     avail_h = slide_h - TITLE_H - 2 * MARGIN
     # canvas가 avail 영역보다 작을 때 업스케일 (더 큰 슬라이드에 맞춰 확대)
@@ -2331,6 +2332,15 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
             lx, ly = edge.label_pos
             cx_label = off_x + lx
             cy_label = off_y + ly
+            # iter-4: edge label 위치 클램프 (음수 또는 슬라이드 초과 좌표 방지)
+            _cl_est_w = max(0.5, 0.08 * len(edge.label) + 0.2)
+            _cl_est_h = 0.22
+            _cl_tl_x, _cl_tl_y = _clamp_pos(
+                cx_label - _cl_est_w / 2, cy_label - _cl_est_h / 2,
+                _cl_est_w, _cl_est_h,
+            )
+            cx_label = _cl_tl_x + _cl_est_w / 2
+            cy_label = _cl_tl_y + _cl_est_h / 2
             # B.4/B.5: 회피 대상 = 모든 노드(src/dst 포함) + 비관련 cluster + 이미 배치된 라벨
             #           edge label은 어떤 노드와도 겹치면 안 됨
             label_avoid: list[tuple[float, float, float, float]] = list(all_node_bboxes.values())

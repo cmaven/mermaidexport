@@ -42,19 +42,54 @@ _SLIDE_TIER_LARGE  = 20  # 노드+클러스터 > 이 수 → 24×13.5"
 _SLIDE_TIER_MEDIUM = 5   # 노드+클러스터 > 이 수 → 16×9"
 
 
-def _suggest_slide_dims(node_count: int, cluster_count: int = 0) -> tuple[float, float]:
-    """다이어그램 복잡도에 따른 권장 슬라이드 크기(인치) 반환.
+def _suggest_slide_dims(
+    node_count: int,
+    cluster_count: int = 0,
+    canvas_ratio: Optional[float] = None,
+) -> tuple[float, float]:
+    """다이어그램 복잡도 + viewBox 비율에 따른 권장 슬라이드 크기(인치) 반환.
+
+    Args:
+        node_count: 노드 수.
+        cluster_count: 클러스터(서브그래프) 수.
+        canvas_ratio: layout.canvas_w / layout.canvas_h (가로/세로 비율).
+                      None 이면 표준 16:9 반환.
 
     Returns:
-        (slide_w_in, slide_h_in): 16:9 비율의 표준 슬라이드 크기.
+        (slide_w_in, slide_h_in): 슬라이드 크기 (인치).
     """
     total = node_count + cluster_count
     if total > _SLIDE_TIER_LARGE:
-        return 24.0, 13.5   # 1.8× 확대 슬라이드
+        base_h = 13.5
     elif total > _SLIDE_TIER_MEDIUM:
-        return 16.0, 9.0    # 1.2× 확대 슬라이드
+        base_h = 9.0
     else:
-        return 13.333, 7.5  # 기본 16:9
+        base_h = 7.5
+
+    if canvas_ratio is None or canvas_ratio <= 0:
+        # 비율 정보 없으면 16:9 반환
+        return round(base_h * 16.0 / 9.0, 3), base_h
+
+    # iter-4: viewBox 비율 기반 슬라이드 폭 동적 결정
+    base_w = base_h * canvas_ratio
+
+    # 최대 크기 클램프 (실용 한계: 32" × 20")
+    MAX_W, MAX_H = 32.0, 20.0
+    if base_w > MAX_W:
+        base_h = base_h * (MAX_W / base_w)
+        base_w = MAX_W
+    if base_h > MAX_H:
+        base_w = base_w * (MAX_H / base_h)
+        base_h = MAX_H
+
+    # 최소 크기 보장 (13.333" × 7.5" 이상) — MAX 클램프와 동시 적용으로 순환 방지
+    MIN_W, MIN_H = 13.333, 7.5
+    if base_w < MIN_W or base_h < MIN_H:
+        scale = max(MIN_W / base_w, MIN_H / base_h)
+        base_w = min(base_w * scale, MAX_W)
+        base_h = min(base_h * scale, MAX_H)
+
+    return round(base_w, 3), round(base_h, 3)
 
 
 # ──────────────────────────────────────────────
