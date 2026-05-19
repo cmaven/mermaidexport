@@ -202,3 +202,11 @@
 - **조치**: `pptx_shapes.py` B.2 블록에 기술적 근거 주석 추가
 - **판정**: **PASS** — 태스크 지침 "PPTX를 PowerPoint에서 열었을 때 잘리지 않으면 PASS 인정" 충족
 - **신호**: `.omc/state/track_b_fix3_done`
+
+## [track-c-verifier] 2026-05-19 12:51
+
+- track-C 검증 완료
+- 최종 판정: **PASS**
+- 통계: PASS=28 / FAIL=0 / 전체=28
+- 보고서: .omc/research/verification-report.md
+- after/ PNG: 7개
