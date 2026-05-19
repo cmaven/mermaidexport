@@ -30,12 +30,31 @@ logger = logging.getLogger(__name__)
 # png.py 의 _MERMAID_CONFIG["flowchart"] 와 동일 값을 유지한다.
 _MMDC_FLOWCHART_CONFIG: dict = {
     "flowchart": {
-        "nodeSpacing": 80,   # E.2: 기본 50 → 80 (화살표 뭉침 해소)
-        "rankSpacing": 100,  # E.2: 기본 50 → 100 (rank 간 수직 여백 확대)
+        "nodeSpacing": 50,   # iter-3: 기본값 복원 (80이 fitTo 상쇄로 역설적 효과 없음)
+        "rankSpacing": 50,   # iter-3: 기본값 복원
         "htmlLabels": True,
         "useMaxWidth": False,
     }
 }
+
+# 동적 슬라이드 크기 결정 임계값
+_SLIDE_TIER_LARGE  = 20  # 노드+클러스터 > 이 수 → 24×13.5"
+_SLIDE_TIER_MEDIUM = 5   # 노드+클러스터 > 이 수 → 16×9"
+
+
+def _suggest_slide_dims(node_count: int, cluster_count: int = 0) -> tuple[float, float]:
+    """다이어그램 복잡도에 따른 권장 슬라이드 크기(인치) 반환.
+
+    Returns:
+        (slide_w_in, slide_h_in): 16:9 비율의 표준 슬라이드 크기.
+    """
+    total = node_count + cluster_count
+    if total > _SLIDE_TIER_LARGE:
+        return 24.0, 13.5   # 1.8× 확대 슬라이드
+    elif total > _SLIDE_TIER_MEDIUM:
+        return 16.0, 9.0    # 1.2× 확대 슬라이드
+    else:
+        return 13.333, 7.5  # 기본 16:9
 
 
 # ──────────────────────────────────────────────

@@ -50,8 +50,8 @@ _MERMAID_CONFIG = {
         "padding": 70,
         "htmlLabels": True,
         "useMaxWidth": False,
-        "nodeSpacing": 80,   # E.2: 노드 간 수평 간격 확대 (기본 50)
-        "rankSpacing": 100,  # E.2: rank 간 수직 간격 확대 (기본 50)
+        "nodeSpacing": 50,   # iter-3: 기본값 복원 (역설 해소)
+        "rankSpacing": 50,   # iter-3: 기본값 복원
     },
     "sequence": {
         "useMaxWidth": False,

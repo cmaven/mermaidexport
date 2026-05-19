@@ -1362,7 +1362,7 @@ def mermaid_to_pptx(mermaid_code: str, title: str = "") -> bytes:
 # mmdc SVG 기반 레이아웃 렌더러 (신규)
 # ──────────────────────────────────────────────
 
-def _add_title_and_bg(slide, title: str) -> None:
+def _add_title_and_bg(slide, title: str, slide_w: float = SLIDE_W) -> None:
     """슬라이드 배경(흰색) + 제목 + 하단 구분선을 추가한다."""
     background = slide.background
     background.fill.solid()
@@ -1373,7 +1373,7 @@ def _add_title_and_bg(slide, title: str) -> None:
 
     title_box = slide.shapes.add_textbox(
         Inches(MARGIN), Inches(0.1),
-        Inches(SLIDE_W - 2 * MARGIN), Inches(TITLE_H),
+        Inches(slide_w - 2 * MARGIN), Inches(TITLE_H),
     )
     tf = title_box.text_frame
     para = tf.paragraphs[0]
@@ -2165,13 +2165,7 @@ def _add_edge_label_at(
 
 def _render_pptx_from_layout(layout, title: str = "") -> bytes:
     """layout_engine이 만든 LayoutResult를 PPTX 슬라이드로 렌더링한다."""
-    prs = Presentation()
-    prs.slide_width = Inches(SLIDE_W)
-    prs.slide_height = Inches(SLIDE_H)
-    blank_layout = prs.slide_layouts[6]
-    slide = prs.slides.add_slide(blank_layout)
-
-    _add_title_and_bg(slide, title)
+    from converters.layout_engine import _suggest_slide_dims, _apply_layout_rescale
 
     # ── B.2: 노드 최소 높이 보장 — dagre 폰트 크기 차이 보정 ──────────────────
     # [설계 결정] auto_size=None + word_wrap=True = OOXML <a:noAutofit/>
@@ -2207,20 +2201,46 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
         if all_y2:
             layout.canvas_h = max(layout.canvas_h, max(all_y2))
 
+    # ── iter-3: 동적 슬라이드 크기 + 캔버스 업스케일 ────────────────────────
+    slide_w, slide_h = _suggest_slide_dims(len(layout.nodes), len(layout.clusters))
+    avail_w = slide_w - 2 * MARGIN
+    avail_h = slide_h - TITLE_H - 2 * MARGIN
+    # canvas가 avail 영역보다 작을 때 업스케일 (더 큰 슬라이드에 맞춰 확대)
+    if layout.canvas_w > 0 and layout.canvas_h > 0:
+        rs_w = avail_w / layout.canvas_w
+        rs_h = avail_h / layout.canvas_h
+        rs = min(rs_w, rs_h)
+        if rs > 1.001:  # 0.1% 이상 확대 시에만 적용
+            _apply_layout_rescale(layout, rs)
+
+    # PPTX 슬라이드 생성 (동적 크기)
+    prs = Presentation()
+    prs.slide_width = Inches(slide_w)
+    prs.slide_height = Inches(slide_h)
+    blank_layout = prs.slide_layouts[6]
+    slide = prs.slides.add_slide(blank_layout)
+
+    _add_title_and_bg(slide, title, slide_w=slide_w)
+
     # 콘텐츠 영역에 캔버스를 가운데 정렬 (오프셋)
-    avail_w = SLIDE_W - 2 * MARGIN
-    avail_h = SLIDE_H - TITLE_H - 2 * MARGIN
     off_x = MARGIN + max(0.0, (avail_w - layout.canvas_w) / 2.0)
     off_y = TITLE_H + MARGIN + max(0.0, (avail_h - layout.canvas_h) / 2.0)
+
+    def _clamp_pos(x: float, y: float, w: float, h: float) -> tuple[float, float]:
+        """shape 좌상단 좌표를 슬라이드 경계 안으로 클램프."""
+        x = max(0.0, min(x, slide_w - w))
+        y = max(TITLE_H, min(y, slide_h - h))
+        return x, y
 
     # 1) 서브그래프 박스 (노드 뒤로)
     cluster_idx_map: dict[str, int] = {}
     for idx, cl in enumerate(layout.clusters):
         cluster_idx_map[cl.id] = idx
         fill_color = _SUBGRAPH_FILLS[idx % len(_SUBGRAPH_FILLS)]
+        cx, cy = _clamp_pos(off_x + cl.x, off_y + cl.y, cl.w, cl.h)
         _add_subgraph_box_at(
             slide,
-            off_x + cl.x, off_y + cl.y, cl.w, cl.h,
+            cx, cy, cl.w, cl.h,
             cl.label, fill_color, idx,
         )
 
@@ -2231,9 +2251,10 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
             palette_idx = cluster_idx_map[node.cluster_id]
         else:
             palette_idx = node_idx
+        nx, ny = _clamp_pos(off_x + node.x, off_y + node.y, node.w, node.h)
         shape_map[nid] = _add_node_at(
             slide,
-            off_x + node.x, off_y + node.y, node.w, node.h,
+            nx, ny, node.w, node.h,
             node.label, node.shape, palette_idx,
             fill_override=node.fill_override,
             text_color_override=node.text_color_override,

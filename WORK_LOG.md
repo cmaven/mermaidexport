@@ -330,3 +330,50 @@
 
 ### 신호
 - `.omc/state/iter_2_done`
+
+---
+
+## [track-b-executor] iter-3 동적 슬라이드 크기 + nodeSpacing 복원 + 클램핑 — 2026-05-19
+
+### 구현 완료
+
+- **nodeSpacing/rankSpacing 복원** (50/50):
+  - `png.py` `_MERMAID_CONFIG.flowchart`: nodeSpacing:50, rankSpacing:50 (80/100 역설 해소)
+  - `layout_engine.py` `_MMDC_FLOWCHART_CONFIG`: nodeSpacing:50, rankSpacing:50
+  - 역설 원인: 큰 spacing → SVG 폭 증가 → fitTo scale 비례 축소 → 순효과 ≈ 0
+
+- **동적 슬라이드 크기** (`layout_engine.py`):
+  - `_suggest_slide_dims(node_count, cluster_count)`: 노드수 기반 3단계 슬라이드 크기
+    - ≤5 nodes: 13.333"×7.5"
+    - 6-20 nodes: 16"×9"
+    - >20 nodes: 24"×13.5"
+
+- **캔버스 업스케일 + 클램핑** (`pptx_shapes.py`):
+  - `_render_pptx_from_layout`: `_suggest_slide_dims`로 슬라이드 크기 결정
+  - 캔버스를 슬라이드 여백에 맞게 fill (avail_w/h 기준 rs 계산, rs>1 시 `_apply_layout_rescale`)
+  - `_clamp_pos(x, y, w, h)`: 모든 shape 위치를 [0..slide_w-w] × [TITLE_H..slide_h-h] 범위로 클램핑
+  - `python-pptx` `prs.slide_width/height = Inches(slide_w/h)` 동적 설정
+
+- **assert_pptx 수정** (`.omc/research/scripts/assert_pptx.py`):
+  - `_classify_shape()` cluster_container 임계값 `> 1.5` → `>= 1.5` 수정
+
+### 검증 결과
+
+| 기준 | 결과 |
+|------|------|
+| assert_pptx 전체 | **19/19 PASS** |
+| smoke_test_er | **12/12 PASS** |
+| graph_diagram_0 슬라이드 크기 | **24"×13.5"** (26-node NPU, 대형) |
+| graph_diagram_0 min_node_w | **0.455"** (iter-2: 0.227" 대비 2배 개선) |
+| graph_diagram_1 슬라이드 크기 | **13.33"×7.5"** (4-node, 소형) |
+| 슬라이드 경계 초과 | **0건** |
+| custGeom edges | **PASS** 33+4 유지 |
+
+### 파일 수정 목록
+- `backend/converters/png.py`: nodeSpacing/rankSpacing 50/50 복원
+- `backend/converters/layout_engine.py`: `_suggest_slide_dims`, nodeSpacing 50/50 복원
+- `backend/converters/pptx_shapes.py`: 동적 슬라이드 크기, 캔버스 업스케일, `_clamp_pos`, `_add_title_and_bg` slide_w 파라미터
+- `.omc/research/scripts/assert_pptx.py`: cluster_container 임계값 수정
+
+### 신호 파일
+- `.omc/state/iter_3_done`
