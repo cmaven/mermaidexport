@@ -1887,7 +1887,7 @@ def _add_polyline_edge(
     from pptx.enum.dml import MSO_LINE_DASH_STYLE
 
     line_color = RGBColor(0x47, 0x55, 0x69)
-    line_w = Pt(1.2)
+    line_w = Pt(2.0)
 
     for i in range(len(points_in) - 1):
         x1, y1 = points_in[i]
@@ -1897,9 +1897,9 @@ def _add_polyline_edge(
         ex_emu = Inches(x2)
         ey_emu = Inches(y2)
         if sx_emu == ex_emu:
-            ex_emu += 1
+            ex_emu += 9144  # 1px(96dpi) = 9144 EMU — LibreOffice 수직선 렌더링 보장
         if sy_emu == ey_emu:
-            ey_emu += 1
+            ey_emu += 9144  # 1px(96dpi) = 9144 EMU — LibreOffice 수평선 렌더링 보장
 
         conn = slide.shapes.add_connector(
             MSO_CONNECTOR.STRAIGHT, sx_emu, sy_emu, ex_emu, ey_emu
