@@ -48,6 +48,19 @@ _MMDC_DENSE_CONFIG: dict = {
 }
 _DENSE_NODE_THRESHOLD = 20  # 이 이상이면 dense 프리셋 사용
 
+# iter-9: ELK 레이아웃 엔진 config (더 나은 엣지 라우팅, 비 dense 그래프 적용)
+_MMDC_ELK_CONFIG: dict = {
+    "flowchart": {
+        "defaultRenderer": "elk",
+        "nodeSpacing": 50,
+        "rankSpacing": 50,
+        "htmlLabels": True,
+        "useMaxWidth": False,
+    }
+}
+_ELK_NODE_H_THRESHOLD = 0.5  # ELK 노드가 이 높이 초과 시 정규화 적용 (inches)
+_ELK_TARGET_NODE_H    = 0.4  # 정규화 목표 노드 높이 — dagre 수준 (inches)
+
 # 동적 슬라이드 크기 결정 임계값
 _SLIDE_TIER_LARGE  = 20  # 노드+클러스터 > 이 수 → 24×13.5"
 _SLIDE_TIER_MEDIUM = 5   # 노드+클러스터 > 이 수 → 16×9"
@@ -1032,11 +1045,13 @@ def compute_layout_via_mmdc(
         with tempfile.TemporaryDirectory() as tmp:
             workdir = Path(tmp)
             # iter-5 D.3: dense 다이어그램 (노드 ≥ 20) 은 촘촘한 spacing 프리셋 사용
+            # iter-9: 비 dense 그래프는 ELK 레이아웃 시도 (더 나은 엣지 라우팅)
             _node_re = re.compile(r'^\s{4,}([A-Za-z_][A-Za-z0-9_]*)\s*[\[({"\']', re.MULTILINE)
             _est_nodes = len({m for m in _node_re.findall(mermaid_code)
                               if m not in {"subgraph", "end", "graph", "flowchart",
                                            "style", "classDef", "linkStyle"}})
-            _mmdc_cfg = _MMDC_DENSE_CONFIG if _est_nodes >= _DENSE_NODE_THRESHOLD else None
+            _mmdc_cfg = _MMDC_DENSE_CONFIG if _est_nodes >= _DENSE_NODE_THRESHOLD else _MMDC_ELK_CONFIG
+            _using_elk = (_mmdc_cfg is _MMDC_ELK_CONFIG)
             svg_path = _run_mmdc_to_svg(
                 mermaid_code, workdir, puppeteer_config, timeout=timeout,
                 mermaid_cfg=_mmdc_cfg,
@@ -1107,6 +1122,14 @@ def compute_layout_via_mmdc(
                 canvas_h=svg_h_px * scale,
                 scale=scale,
             )
+            # iter-9: ELK 노드 크기 정규화 — dagre 수준으로 스케일 다운
+            # ELK 는 dagre 대비 2배 큰 노드를 생성. 중앙값 높이 기준 정규화.
+            if _using_elk and result.nodes:
+                _node_hs = sorted(n.h for n in result.nodes.values())
+                _med_h = _node_hs[len(_node_hs) // 2]
+                if _med_h > _ELK_NODE_H_THRESHOLD:
+                    _norm = _ELK_TARGET_NODE_H / _med_h
+                    _apply_layout_rescale(result, _norm)
             # iter-2: 최소 노드 크기 보장 전역 리스케일
             rf = _compute_rescale_factor(result, max_w=target_w_in, max_h=target_h_in)
             _apply_layout_rescale(result, rf)

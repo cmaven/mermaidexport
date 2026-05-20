@@ -2262,10 +2262,10 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
         if rs > 1.001:  # 0.1% 이상 확대 시에만 적용
             _apply_layout_rescale(layout, rs)
 
-    # ── D.1 (iter-8): ER entity 박스 content 비례 클램프 — 업스케일 이후 ──────
-    # iter-7: 고정 max(2.5"×4.0") → 업스케일 후에도 과대 박스 잔존 문제 확인.
-    # iter-8: 라벨 줄 수 / 최장 행 기준 content_h/w 계산 → 비례 상한 적용.
-    # 장점: 필드 2개 entity는 1.1" 내외로 축소, 필드 5개는 2.0" 내외 허용.
+    # ── D.1 (iter-9): ER entity 박스 content 비례 클램프 — 계수 완화 ──────────
+    # iter-8: content × 1.2/1.4 → 사용자 시각상 박스가 너무 빠듯해 가독성 저하.
+    # iter-9: content × 1.6(h) / 2.0(w) 로 완화 — 텍스트 여백 충분히 확보.
+    # 효과: CUSTOMER(2필드) 1.08" → 1.44", NPUClusterPolicy(5필드) 유지(~2.5").
     if getattr(layout, 'is_er', False):
         _ER_MIN_H, _ER_MAX_H = 0.8, 2.5
         _ER_MIN_W, _ER_MAX_W = 1.5, 4.0
@@ -2278,12 +2278,11 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
             lines = [ln for ln in lbl.split("\n") if ln.strip()] or [""]
             n_lines   = max(1, len(lines))
             max_chars = max(len(ln) for ln in lines)
-            # content 치수 (실제 텍스트 크기 추정)
             content_h = n_lines * _ER_LINE_H + _ER_V_PAD
             content_w = max_chars * _ER_CHAR_W + _ER_H_PAD
-            # content 비례 상한: content × 1.2 이내 (단, 절대 min/max 준수)
-            max_h = min(_ER_MAX_H, max(_ER_MIN_H, content_h * 1.2))
-            max_w = min(_ER_MAX_W, max(_ER_MIN_W, content_w * 1.4))
+            # iter-9: 계수 1.2/1.4 → 1.6/2.0 (가독성 여백 확보)
+            max_h = min(_ER_MAX_H, max(_ER_MIN_H, content_h * 1.6))
+            max_w = min(_ER_MAX_W, max(_ER_MIN_W, content_w * 2.0))
             node.h = max(_ER_MIN_H, min(node.h, max_h))
             node.w = max(_ER_MIN_W, min(node.w, max_w))
 
