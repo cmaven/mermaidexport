@@ -2262,16 +2262,30 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
         if rs > 1.001:  # 0.1% 이상 확대 시에만 적용
             _apply_layout_rescale(layout, rs)
 
-    # ── D.1 (iter-7 이동): ER entity 박스 크기 정규화 — 업스케일 이후 클램프 ──
-    # 업스케일 전 D.1 → 업스케일이 클램프를 무효화하는 문제 수정.
-    # 업스케일 완료 후 max 크기 초과분만 제한 (min은 업스케일이 보장).
+    # ── D.1 (iter-8): ER entity 박스 content 비례 클램프 — 업스케일 이후 ──────
+    # iter-7: 고정 max(2.5"×4.0") → 업스케일 후에도 과대 박스 잔존 문제 확인.
+    # iter-8: 라벨 줄 수 / 최장 행 기준 content_h/w 계산 → 비례 상한 적용.
+    # 장점: 필드 2개 entity는 1.1" 내외로 축소, 필드 5개는 2.0" 내외 허용.
     if getattr(layout, 'is_er', False):
         _ER_MIN_H, _ER_MAX_H = 0.8, 2.5
         _ER_MIN_W, _ER_MAX_W = 1.5, 4.0
-        _ER_PAD = 0.15  # 내용 기준 여백
+        _ER_LINE_H = 0.25   # 행당 높이 (inches, 약 9pt 맑은고딕 + 행간)
+        _ER_V_PAD  = 0.15   # 상하 여백 합계
+        _ER_CHAR_W = 0.075  # 글자당 너비 (inches, 약 9pt 맑은고딕)
+        _ER_H_PAD  = 0.20   # 좌우 여백 합계
         for node in layout.nodes.values():
-            node.h = max(_ER_MIN_H, min(node.h + _ER_PAD, _ER_MAX_H))
-            node.w = max(_ER_MIN_W, min(node.w + _ER_PAD, _ER_MAX_W))
+            lbl = node.label or ""
+            lines = [ln for ln in lbl.split("\n") if ln.strip()] or [""]
+            n_lines   = max(1, len(lines))
+            max_chars = max(len(ln) for ln in lines)
+            # content 치수 (실제 텍스트 크기 추정)
+            content_h = n_lines * _ER_LINE_H + _ER_V_PAD
+            content_w = max_chars * _ER_CHAR_W + _ER_H_PAD
+            # content 비례 상한: content × 1.2 이내 (단, 절대 min/max 준수)
+            max_h = min(_ER_MAX_H, max(_ER_MIN_H, content_h * 1.2))
+            max_w = min(_ER_MAX_W, max(_ER_MIN_W, content_w * 1.4))
+            node.h = max(_ER_MIN_H, min(node.h, max_h))
+            node.w = max(_ER_MIN_W, min(node.w, max_w))
 
     # PPTX 슬라이드 생성 (동적 크기)
     prs = Presentation()
