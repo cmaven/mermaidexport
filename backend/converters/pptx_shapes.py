@@ -4,7 +4,7 @@
 #       flowchart/graph 및 sequenceDiagram 지원
 #       엣지는 mmdc SVG polyline + 8방향 corner detour v2 + 다단계 우회
 #       서브그래프 타이틀바도 회피 대상에 포함
-# 생성일: 2026-04-07 | 수정일: 2026-05-19 (ER 분기 + multi-paragraph + PNG 폴백 + custGeom bezier)
+# 생성일: 2026-04-07 | 수정일: 2026-05-20 (sequenceDiagram: alt/Note/br decode/동적 슬라이드 보강)
 # ============================================================
 
 import html as _html_std
@@ -861,43 +861,92 @@ _SEQ_PARTICIPANT_RE = re.compile(
     re.I
 )
 
+# <br/> 태그 패턴 (Y.2)
+_SEQ_BR_RE = re.compile(r'<br\s*/?>', re.I)
 
-def _parse_sequence(mermaid_code: str) -> tuple[list[tuple[str, str]], list[tuple[str, str, str, bool]]]:
+
+def _br_decode(text: str) -> str:
+    """HTML <br/> → \\n 변환 + HTML entity decode (Y.2)."""
+    return _html_std.unescape(_SEQ_BR_RE.sub('\n', text))
+
+
+# Note over / Note left of / Note right of 파싱 패턴 (Y.1)
+_SEQ_NOTE_RE = re.compile(
+    r"^\s*[Nn]ote\s+(?:over|left\s+of|right\s+of)\s+"
+    r"(?P<actors>[A-Za-z0-9_]+(?:\s*,\s*[A-Za-z0-9_]+)*)"
+    r"\s*:\s*(?P<label>.+)$"
+)
+
+# alt / else / loop / opt / par / end 블록 패턴 (Y.1)
+_SEQ_BLOCK_RE = re.compile(
+    r"^\s*(?P<kind>alt|else|loop|opt|par|end)\b(?:\s+(?P<label>.+))?$",
+    re.I
+)
+
+
+def _parse_sequence(mermaid_code: str) -> tuple[list[tuple[str, str]], list[dict]]:
     """시퀀스 다이어그램 Mermaid 코드를 파싱한다.
 
     Returns:
-        (participants, messages) 튜플.
-        participants: [(id, label), ...] 순서 보장 리스트.
-        messages: [(source, target, label, dashed), ...] 리스트.
+        (participants, events) 튜플.
+        participants: [(id, label), ...] 순서 보장 리스트. label은 <br/> decode 완료.
+        events: 이벤트 딕셔너리 리스트.
+            {"type": "msg",       "src", "dst", "label", "dashed"}
+            {"type": "note",      "actors": [str], "label"}
+            {"type": "blk_start", "kind": "alt"|"loop"|"opt"|"par", "label"}
+            {"type": "blk_else",  "label"}
+            {"type": "blk_end"}
     """
     participants: list[tuple[str, str]] = []
     participant_ids: list[str] = []
-    messages: list[tuple[str, str, str, bool]] = []
+    events: list[dict] = []
 
     for raw_line in mermaid_code.splitlines():
         line = raw_line.strip()
-        if not line or line.lower().startswith("sequencediagram"):
+        if not line or line.lower().startswith("sequencediagram") or line.startswith("%%"):
             continue
 
-        # participant/actor 선언
+        # participant/actor 선언 (Y.4: alias <br/> decode)
         p_match = _SEQ_PARTICIPANT_RE.match(line)
         if p_match:
             pid = p_match.group("id")
-            plabel = (p_match.group("label") or pid).strip()
+            plabel = _br_decode((p_match.group("label") or pid).strip())
             if pid not in participant_ids:
                 participant_ids.append(pid)
                 participants.append((pid, plabel))
             continue
 
-        # 메시지 화살표
+        # Note over / Note left of / Note right of (Y.1)
+        n_match = _SEQ_NOTE_RE.match(line)
+        if n_match:
+            actors = [a.strip() for a in n_match.group("actors").split(",")]
+            label = _br_decode(n_match.group("label").strip())
+            events.append({"type": "note", "actors": actors, "label": label})
+            continue
+
+        # alt / else / loop / opt / par / end 블록 (Y.1)
+        b_match = _SEQ_BLOCK_RE.match(line)
+        if b_match:
+            kind = b_match.group("kind").lower()
+            label = _br_decode((b_match.group("label") or "").strip())
+            if kind == "end":
+                events.append({"type": "blk_end"})
+            elif kind == "else":
+                events.append({"type": "blk_else", "label": label})
+            else:
+                events.append({"type": "blk_start", "kind": kind, "label": label})
+            continue
+
+        # 메시지 화살표 (Y.2: label <br/> decode)
         m_match = _SEQ_ARROW_RE.match(line)
         if m_match:
             src = m_match.group("src")
             dst = m_match.group("dst")
-            label = m_match.group("label").strip()
+            label = _br_decode(m_match.group("label").strip())
             arrow = m_match.group("arrow")
             dashed = "--" in arrow
-            messages.append((src, dst, label, dashed))
+            events.append({"type": "msg", "src": src, "dst": dst,
+                           "label": label, "dashed": dashed})
 
             # 암묵적 참여자 등록
             for actor_id in (src, dst):
@@ -905,7 +954,37 @@ def _parse_sequence(mermaid_code: str) -> tuple[list[tuple[str, str]], list[tupl
                     participant_ids.append(actor_id)
                     participants.append((actor_id, actor_id))
 
-    return participants, messages
+    return participants, events
+
+
+def _seq_add_label(slide, text: str,
+                   x_emu: int, y_emu: int, w_emu: int, h_emu: int,
+                   align=PP_ALIGN.CENTER) -> None:
+    """시퀀스 메시지/Note 라벨 텍스트박스를 추가한다 (\\n 멀티라인 지원)."""
+    txb = slide.shapes.add_textbox(x_emu, y_emu, w_emu, h_emu)
+    tf = txb.text_frame
+    tf.word_wrap = True
+    tf.margin_top = Pt(1)
+    tf.margin_bottom = Pt(1)
+    tf.margin_left = Pt(2)
+    tf.margin_right = Pt(2)
+    lines = text.split('\n')
+    for li, line_text in enumerate(lines):
+        para = tf.paragraphs[0] if li == 0 else tf.add_paragraph()
+        para.alignment = align
+        run = para.add_run()
+        run.text = line_text
+        run.font.size = Pt(7)
+        run.font.color.rgb = RGBColor(0x47, 0x55, 0x69)
+
+
+# alt/loop 블록 헤더 색상 맵
+_SEQ_BLK_COLORS: dict[str, RGBColor] = {
+    "alt":  RGBColor(0x3B, 0x82, 0xF6),  # blue
+    "loop": RGBColor(0x10, 0xB9, 0x81),  # green
+    "opt":  RGBColor(0xF5, 0x9E, 0x0B),  # amber
+    "par":  RGBColor(0x8B, 0x5C, 0xF6),  # violet
+}
 
 
 def _render_sequence(mermaid_code: str, title: str = "") -> bytes:
@@ -920,15 +999,77 @@ def _render_sequence(mermaid_code: str, title: str = "") -> bytes:
     """
     from pptx.enum.dml import MSO_LINE_DASH_STYLE
 
-    participants, messages = _parse_sequence(mermaid_code)
+    participants, events = _parse_sequence(mermaid_code)
 
     if not participants:
         raise ValueError("시퀀스 다이어그램에서 참여자를 찾을 수 없습니다.")
 
-    # PPTX 생성
+    n_part = len(participants)
+
+    # Y.3: 동적 슬라이드 폭 — participant 수에 맞게 폭·박스 크기 조정
+    _PART_GAP = _SEQ_PARTICIPANT_GAP  # 0.5"
+    avail_w = SLIDE_W - 2 * MARGIN   # 12.733"
+    total_gaps = (n_part - 1) * _PART_GAP
+    # participant 박스 폭: 슬라이드에 맞추되 최소 1.0"
+    part_w = (
+        min(_SEQ_PARTICIPANT_W, (avail_w - total_gaps) / n_part)
+        if n_part > 1 else _SEQ_PARTICIPANT_W
+    )
+    part_w = max(part_w, 1.0)
+    total_part_w = n_part * part_w + (n_part - 1) * _PART_GAP
+    slide_w = max(SLIDE_W, total_part_w + 2 * MARGIN)
+
+    # ── Pass 1: 이벤트별 y 위치 계산 ─────────────────────
+    part_y = _SEQ_TOP_MARGIN
+    msg_y_start = part_y + _SEQ_PARTICIPANT_H + 0.3
+    cur_y = msg_y_start
+    y_positions: list[float] = []
+
+    for event in events:
+        y_positions.append(cur_y)
+        etype = event["type"]
+        if etype == "msg":
+            cur_y += _SEQ_MSG_GAP
+        elif etype == "note":
+            n_lines = len(event["label"].split('\n'))
+            cur_y += max(0.35, n_lines * 0.22 + 0.15)
+        elif etype in ("blk_start", "blk_else"):
+            cur_y += 0.28
+        else:  # blk_end
+            cur_y += 0.05
+
+    msg_y_end = cur_y + 0.3
+
+    # Y.3: 동적 슬라이드 높이
+    slide_h = max(SLIDE_H, msg_y_end + 0.3)
+
+    # ── alt/loop 블록 스팬 계산 ─────────────────────────
+    alt_blocks: list[dict] = []
+    blk_stack: list[dict] = []
+    for i, event in enumerate(events):
+        etype = event["type"]
+        y = y_positions[i]
+        if etype == "blk_start":
+            blk_stack.append({
+                "kind": event.get("kind", "alt"),
+                "label": event.get("label", ""),
+                "start_y": y,
+                "else_ys": [],
+            })
+        elif etype == "blk_else" and blk_stack:
+            blk_stack[-1]["else_ys"].append(y)
+        elif etype == "blk_end" and blk_stack:
+            blk = blk_stack.pop()
+            blk["end_y"] = y + 0.05
+            alt_blocks.append(blk)
+    for blk in blk_stack:  # 닫히지 않은 블록
+        blk["end_y"] = msg_y_end - 0.1
+        alt_blocks.append(blk)
+
+    # ── PPTX 생성 ────────────────────────────────────────
     prs = Presentation()
-    prs.slide_width = Inches(SLIDE_W)
-    prs.slide_height = Inches(SLIDE_H)
+    prs.slide_width = Inches(slide_w)
+    prs.slide_height = Inches(slide_h)
 
     blank_layout = prs.slide_layouts[6]
     slide = prs.slides.add_slide(blank_layout)
@@ -942,7 +1083,7 @@ def _render_sequence(mermaid_code: str, title: str = "") -> bytes:
     if title:
         title_box = slide.shapes.add_textbox(
             Inches(MARGIN), Inches(0.1),
-            Inches(SLIDE_W - 2 * MARGIN), Inches(TITLE_H)
+            Inches(slide_w - 2 * MARGIN), Inches(TITLE_H)
         )
         tf = title_box.text_frame
         para = tf.paragraphs[0]
@@ -967,7 +1108,7 @@ def _render_sequence(mermaid_code: str, title: str = "") -> bytes:
         line_bar = slide.shapes.add_shape(
             MSO_SHAPE.ROUNDED_RECTANGLE,
             Inches(MARGIN), Inches(TITLE_H + 0.05),
-            Inches(SLIDE_W - 2 * MARGIN), Inches(0.03)
+            Inches(slide_w - 2 * MARGIN), Inches(0.03)
         )
         line_bar.fill.solid()
         line_bar.fill.fore_color.rgb = RGBColor(0x3B, 0x82, 0xF6)
@@ -975,176 +1116,267 @@ def _render_sequence(mermaid_code: str, title: str = "") -> bytes:
         remove_style_element(line_bar._element)
         _remove_shadow(line_bar)
 
-    # 참여자 배치 계산: 전체를 슬라이드 중앙에 정렬
-    n_part = len(participants)
-    total_part_w = n_part * _SEQ_PARTICIPANT_W + (n_part - 1) * _SEQ_PARTICIPANT_GAP
-    start_x = (SLIDE_W - total_part_w) / 2.0
-    part_y = _SEQ_TOP_MARGIN
+    # 참여자 배치 계산: 슬라이드 중앙 정렬
+    start_x = (slide_w - total_part_w) / 2.0
 
-    # 메시지 영역 시작/끝 y 좌표
-    msg_y_start = part_y + _SEQ_PARTICIPANT_H + 0.3
-    msg_y_end = msg_y_start + len(messages) * _SEQ_MSG_GAP + 0.2
+    # ── Y.1: alt/loop 블록 박스 (배경 레이어로 먼저 그림) ─
+    _BLK_BOX_PAD = 0.12   # 블록 박스가 참여자 영역보다 넓어지는 패딩
+    _BLK_HEADER_H = 0.24
+    blk_box_x = start_x - _BLK_BOX_PAD
+    blk_box_w = total_part_w + 2 * _BLK_BOX_PAD
 
-    # 참여자 인덱스 → x 중심 매핑
+    for blk in alt_blocks:
+        kind = blk["kind"]
+        label = blk.get("label", "")
+        by = blk["start_y"]
+        bh = max(blk["end_y"] - by, _BLK_HEADER_H + 0.1)
+
+        # 외곽선 박스 (투명 배경 + 점선 테두리)
+        box_shape = slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE,
+            Inches(blk_box_x), Inches(by), Inches(blk_box_w), Inches(bh)
+        )
+        box_shape.fill.background()
+        box_shape.line.color.rgb = RGBColor(0x64, 0x74, 0x8B)
+        box_shape.line.width = Pt(1.0)
+        box_shape.line.dash_style = MSO_LINE_DASH_STYLE.DASH
+        remove_style_element(box_shape._element)
+        _remove_shadow(box_shape)
+
+        # 헤더 색상 탭 ([alt] / [loop] 등)
+        hdr_color = _SEQ_BLK_COLORS.get(kind, RGBColor(0x94, 0xA3, 0xB8))
+        hdr_shape = slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE,
+            Inches(blk_box_x), Inches(by), Inches(1.0), Inches(_BLK_HEADER_H)
+        )
+        hdr_shape.fill.solid()
+        hdr_shape.fill.fore_color.rgb = hdr_color
+        hdr_shape.line.fill.background()
+        remove_style_element(hdr_shape._element)
+        _remove_shadow(hdr_shape)
+
+        tf = hdr_shape.text_frame
+        tf.word_wrap = False
+        tf.margin_top = Pt(1)
+        tf.margin_left = Pt(3)
+        p = tf.paragraphs[0]
+        p.alignment = PP_ALIGN.LEFT
+        run = p.add_run()
+        run.text = f"[{kind}]"
+        run.font.size = Pt(7)
+        run.font.bold = True
+        run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+
+        # 헤더 옆 라벨 (조건 텍스트)
+        if label:
+            lbl_box = slide.shapes.add_textbox(
+                Inches(blk_box_x + 1.05), Inches(by + 0.02),
+                Inches(blk_box_w - 1.1), Inches(_BLK_HEADER_H - 0.04)
+            )
+            tf2 = lbl_box.text_frame
+            tf2.word_wrap = False
+            tf2.margin_top = Pt(1)
+            p2 = tf2.paragraphs[0]
+            p2.alignment = PP_ALIGN.LEFT
+            run2 = p2.add_run()
+            run2.text = label
+            run2.font.size = Pt(7)
+            run2.font.italic = True
+            run2.font.color.rgb = RGBColor(0x47, 0x55, 0x69)
+
+        # else 구분선 + "[else]" 라벨
+        for else_y in blk["else_ys"]:
+            else_line = slide.shapes.add_shape(
+                MSO_SHAPE.RECTANGLE,
+                Inches(blk_box_x), Inches(else_y),
+                Inches(blk_box_w), Inches(0.02)
+            )
+            else_line.fill.solid()
+            else_line.fill.fore_color.rgb = RGBColor(0x94, 0xA3, 0xB8)
+            else_line.line.fill.background()
+            remove_style_element(else_line._element)
+            _remove_shadow(else_line)
+
+            else_lbl = slide.shapes.add_textbox(
+                Inches(blk_box_x + 0.05), Inches(else_y + 0.02),
+                Inches(0.6), Inches(0.2)
+            )
+            tf3 = else_lbl.text_frame
+            p3 = tf3.paragraphs[0]
+            run3 = p3.add_run()
+            run3.text = "[else]"
+            run3.font.size = Pt(6)
+            run3.font.italic = True
+            run3.font.color.rgb = RGBColor(0x64, 0x74, 0x8B)
+
+    # ── 참여자 박스 ──────────────────────────────────────
     part_centers: dict[str, float] = {}
-    part_shapes: dict[str, object] = {}
 
     for i, (pid, plabel) in enumerate(participants):
-        px = start_x + i * (_SEQ_PARTICIPANT_W + _SEQ_PARTICIPANT_GAP)
-        cx = px + _SEQ_PARTICIPANT_W / 2.0
-
+        px = start_x + i * (part_w + _PART_GAP)
+        cx = px + part_w / 2.0
         fill_c, stroke_c, text_c = _PALETTE[i % len(_PALETTE)]
         shape = _add_rounded_rect(
-            slide, px, part_y, _SEQ_PARTICIPANT_W, _SEQ_PARTICIPANT_H,
+            slide, px, part_y, part_w, _SEQ_PARTICIPANT_H,
             fill_c, stroke_c, plabel, font_size=9, text_color=text_c
         )
-        # 텍스트를 bold로 설정
         tf = shape.text_frame
         for para in tf.paragraphs:
             for run in para.runs:
                 run.font.bold = True
-
         part_centers[pid] = cx
-        part_shapes[pid] = shape
 
-    # 생명선 (수직 점선): 참여자 하단 → 메시지 영역 하단
+    # ── 생명선 (수직 점선) ───────────────────────────────
     for pid, cx in part_centers.items():
         lifeline_top_emu = Inches(part_y + _SEQ_PARTICIPANT_H)
         lifeline_bot_emu = Inches(msg_y_end)
         cx_emu = Inches(cx)
-
         connector = slide.shapes.add_connector(
             MSO_CONNECTOR.STRAIGHT,
             cx_emu, lifeline_top_emu,
-            cx_emu + 1, lifeline_bot_emu  # +1 EMU to avoid zero extent
+            cx_emu + 1, lifeline_bot_emu  # +1 EMU: zero extent 방지
         )
         connector.line.color.rgb = RGBColor(0x94, 0xA3, 0xB8)
         connector.line.width = Pt(0.75)
         connector.line.dash_style = MSO_LINE_DASH_STYLE.DASH
-
-        # 화살표 머리 제거 (생명선에는 불필요)
         remove_style_element(connector._element)
         _remove_shadow(connector)
 
-    # 메시지 화살표
-    for idx, (src, dst, label, dashed) in enumerate(messages):
-        if src not in part_centers or dst not in part_centers:
-            continue
+    # ── 이벤트 렌더링 ────────────────────────────────────
+    for idx, event in enumerate(events):
+        etype = event["type"]
+        y = y_positions[idx]
+        msg_y_emu = Inches(y)
 
-        msg_y = msg_y_start + idx * _SEQ_MSG_GAP
-        msg_y_emu = Inches(msg_y)
+        if etype == "note":
+            # Y.1: Note 박스 (노란색 메모 스타일)
+            actors = event["actors"]
+            label = event["label"]
+            valid = [a for a in actors if a in part_centers]
+            if valid:
+                min_cx = min(part_centers[a] for a in valid)
+                max_cx = max(part_centers[a] for a in valid)
+                nx = min_cx - part_w / 2.0
+                nw = max(max_cx - min_cx + part_w, 1.5)
+            else:
+                nx = start_x
+                nw = 2.0
+            n_lines = len(label.split('\n'))
+            nh = max(0.3, n_lines * 0.22 + 0.12)
 
-        sx_emu = Inches(part_centers[src])
-        dx_emu = Inches(part_centers[dst])
-
-        if src == dst:
-            # 자기 자신 메시지: 오른쪽으로 작은 루프
-            loop_offset = Inches(0.3)
-            loop_h = Inches(_SEQ_MSG_GAP * 0.4)
-
-            # 수평선 (오른쪽으로)
-            h_conn = slide.shapes.add_connector(
-                MSO_CONNECTOR.STRAIGHT,
-                sx_emu, msg_y_emu,
-                sx_emu + loop_offset, msg_y_emu
+            note_shape = slide.shapes.add_shape(
+                MSO_SHAPE.RECTANGLE,
+                Inches(nx), Inches(y - 0.02), Inches(nw), Inches(nh)
             )
-            h_conn.line.color.rgb = RGBColor(0x47, 0x55, 0x69)
-            h_conn.line.width = Pt(1.2)
-            if dashed:
-                h_conn.line.dash_style = MSO_LINE_DASH_STYLE.DASH
-            remove_style_element(h_conn._element)
-            _remove_shadow(h_conn)
+            note_shape.fill.solid()
+            note_shape.fill.fore_color.rgb = RGBColor(0xFF, 0xF3, 0x9C)
+            note_shape.line.color.rgb = RGBColor(0xD9, 0x7D, 0x06)
+            note_shape.line.width = Pt(0.75)
+            remove_style_element(note_shape._element)
+            _remove_shadow(note_shape)
 
-            # 수직선 (아래로)
-            v_conn = slide.shapes.add_connector(
-                MSO_CONNECTOR.STRAIGHT,
-                sx_emu + loop_offset, msg_y_emu,
-                sx_emu + loop_offset, msg_y_emu + loop_h
-            )
-            v_conn.line.color.rgb = RGBColor(0x47, 0x55, 0x69)
-            v_conn.line.width = Pt(1.2)
-            if dashed:
-                v_conn.line.dash_style = MSO_LINE_DASH_STYLE.DASH
-            remove_style_element(v_conn._element)
-            _remove_shadow(v_conn)
+            tf = note_shape.text_frame
+            tf.word_wrap = True
+            tf.margin_top = Pt(2)
+            tf.margin_bottom = Pt(2)
+            tf.margin_left = Pt(4)
+            tf.margin_right = Pt(4)
+            note_lines = label.split('\n')
+            for li, line_text in enumerate(note_lines):
+                np_ = tf.paragraphs[0] if li == 0 else tf.add_paragraph()
+                np_.alignment = PP_ALIGN.CENTER
+                nr = np_.add_run()
+                nr.text = line_text
+                nr.font.size = Pt(7)
+                nr.font.color.rgb = RGBColor(0x78, 0x35, 0x00)
 
-            # 수평선 (왼쪽으로 돌아옴) + 화살표
-            r_conn = slide.shapes.add_connector(
-                MSO_CONNECTOR.STRAIGHT,
-                sx_emu + loop_offset, msg_y_emu + loop_h,
-                sx_emu, msg_y_emu + loop_h
-            )
-            r_conn.line.color.rgb = RGBColor(0x47, 0x55, 0x69)
-            r_conn.line.width = Pt(1.2)
-            if dashed:
-                r_conn.line.dash_style = MSO_LINE_DASH_STYLE.DASH
-            ln = r_conn._element.find(".//" + qn("a:ln"))
-            if ln is not None:
-                tail = etree.SubElement(ln, qn("a:tailEnd"))
-                tail.set("type", "triangle")
-                tail.set("w", "med")
-                tail.set("len", "med")
-            remove_style_element(r_conn._element)
-            _remove_shadow(r_conn)
+        elif etype in ("blk_start", "blk_else", "blk_end"):
+            pass  # 이미 블록 박스로 처리됨
 
-            # 라벨
-            if label:
-                txb = slide.shapes.add_textbox(
-                    sx_emu + loop_offset,
-                    msg_y_emu - Inches(0.12),
-                    Inches(1.4), Inches(0.25)
+        elif etype == "msg":
+            src = event["src"]
+            dst = event["dst"]
+            label = event["label"]
+            dashed = event["dashed"]
+
+            if src not in part_centers or dst not in part_centers:
+                continue
+
+            sx_emu = Inches(part_centers[src])
+            dx_emu = Inches(part_centers[dst])
+
+            if src == dst:
+                # 자기 자신 메시지: 오른쪽 루프
+                loop_offset = Inches(0.3)
+                loop_h = Inches(_SEQ_MSG_GAP * 0.4)
+
+                # 수평 → 수직 → 수평(화살표) 세그먼트
+                segs = [
+                    (sx_emu, msg_y_emu, sx_emu + loop_offset, msg_y_emu, False),
+                    (sx_emu + loop_offset, msg_y_emu,
+                     sx_emu + loop_offset, msg_y_emu + loop_h, False),
+                    (sx_emu + loop_offset, msg_y_emu + loop_h,
+                     sx_emu, msg_y_emu + loop_h, True),
+                ]
+                for x1, y1, x2, y2, add_arrow in segs:
+                    c = slide.shapes.add_connector(
+                        MSO_CONNECTOR.STRAIGHT, x1, y1, x2, y2)
+                    c.line.color.rgb = RGBColor(0x47, 0x55, 0x69)
+                    c.line.width = Pt(1.2)
+                    if dashed:
+                        c.line.dash_style = MSO_LINE_DASH_STYLE.DASH
+                    if add_arrow:
+                        ln = c._element.find(".//" + qn("a:ln"))
+                        if ln is not None:
+                            tail = etree.SubElement(ln, qn("a:tailEnd"))
+                            tail.set("type", "triangle")
+                            tail.set("w", "med")
+                            tail.set("len", "med")
+                    remove_style_element(c._element)
+                    _remove_shadow(c)
+
+                if label:
+                    msg_lines = label.split('\n')
+                    lh = max(0.25, len(msg_lines) * 0.18)
+                    _seq_add_label(slide, label,
+                                   sx_emu + loop_offset,
+                                   msg_y_emu - Inches(lh),
+                                   Inches(1.4), Inches(lh),
+                                   align=PP_ALIGN.LEFT)
+            else:
+                if sx_emu == dx_emu:
+                    dx_emu += 1
+
+                connector = slide.shapes.add_connector(
+                    MSO_CONNECTOR.STRAIGHT,
+                    sx_emu, msg_y_emu, dx_emu, msg_y_emu
                 )
-                tf = txb.text_frame
-                tf.word_wrap = False
-                p = tf.paragraphs[0]
-                run = p.add_run()
-                run.text = label
-                run.font.size = Pt(7)
-                run.font.color.rgb = RGBColor(0x47, 0x55, 0x69)
-        else:
-            # 일반 수평 메시지 화살표
-            # zero extent 방지
-            if sx_emu == dx_emu:
-                dx_emu += 1
+                connector.line.color.rgb = RGBColor(0x47, 0x55, 0x69)
+                connector.line.width = Pt(1.2)
+                if dashed:
+                    connector.line.dash_style = MSO_LINE_DASH_STYLE.DASH
 
-            connector = slide.shapes.add_connector(
-                MSO_CONNECTOR.STRAIGHT,
-                sx_emu, msg_y_emu,
-                dx_emu, msg_y_emu
-            )
-            connector.line.color.rgb = RGBColor(0x47, 0x55, 0x69)
-            connector.line.width = Pt(1.2)
+                # 화살표 머리 (tailEnd)
+                ln = connector._element.find(".//" + qn("a:ln"))
+                if ln is not None:
+                    tail = etree.SubElement(ln, qn("a:tailEnd"))
+                    tail.set("type", "triangle")
+                    tail.set("w", "med")
+                    tail.set("len", "med")
 
-            if dashed:
-                connector.line.dash_style = MSO_LINE_DASH_STYLE.DASH
+                remove_style_element(connector._element)
+                _remove_shadow(connector)
 
-            # 화살표 머리 추가 (tailEnd)
-            ln = connector._element.find(".//" + qn("a:ln"))
-            if ln is not None:
-                tail = etree.SubElement(ln, qn("a:tailEnd"))
-                tail.set("type", "triangle")
-                tail.set("w", "med")
-                tail.set("len", "med")
-
-            remove_style_element(connector._element)
-            _remove_shadow(connector)
-
-            # 라벨: 화살표 위 중앙 텍스트박스
-            if label:
-                mx_emu = (sx_emu + dx_emu) // 2
-                txb = slide.shapes.add_textbox(
-                    mx_emu - Inches(0.8),
-                    msg_y_emu - Inches(0.18),
-                    Inches(1.6), Inches(0.3)
-                )
-                tf = txb.text_frame
-                tf.word_wrap = False
-                p = tf.paragraphs[0]
-                p.alignment = PP_ALIGN.CENTER
-                run = p.add_run()
-                run.text = label
-                run.font.size = Pt(7)
-                run.font.color.rgb = RGBColor(0x47, 0x55, 0x69)
+                # 라벨: 화살표 위 중앙 텍스트박스 (멀티라인 지원)
+                if label:
+                    mx_emu = (sx_emu + dx_emu) // 2
+                    msg_lines = label.split('\n')
+                    lh = max(0.22, len(msg_lines) * 0.18)
+                    _seq_add_label(slide, label,
+                                   mx_emu - Inches(0.9),
+                                   msg_y_emu - Inches(lh + 0.02),
+                                   Inches(1.8), Inches(lh),
+                                   align=PP_ALIGN.CENTER)
 
     # BytesIO로 저장 후 바이트 반환
     output = BytesIO()

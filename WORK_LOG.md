@@ -673,3 +673,49 @@
 
 ### 신호 파일
 - `.omc/state/type_profile_done`
+
+---
+
+## [track-b-executor] track-Y sequenceDiagram 보강 — 2026-05-20
+
+### 구현 완료 (Y.1~Y.4)
+
+- **Y.1 alt/else/Note over/loop 파싱+렌더** (`pptx_shapes.py`):
+  - `_SEQ_NOTE_RE`: `Note over/left of/right of` 파싱
+  - `_SEQ_BLOCK_RE`: `alt/else/loop/opt/par/end` 블록 파싱
+  - `_parse_sequence` events 기반으로 재설계 (msg/note/blk_start/blk_else/blk_end)
+  - `_render_sequence`: 블록 박스(점선 테두리+헤더 탭) + Note 박스(노란색) 렌더링
+  - else 구분선 + `[else]` 라벨 추가
+
+- **Y.2 `<br/>` decode** (`pptx_shapes.py`):
+  - `_SEQ_BR_RE` + `_br_decode()` 헬퍼 신규
+  - participant 라벨, message 라벨, Note 텍스트 전부 `<br/>` → `\n` + `html.unescape()`
+
+- **Y.3 슬라이드 동적 크기** (`pptx_shapes.py`):
+  - participant 수에 따라 `part_w` 자동 축소 (최소 1.0")
+  - `slide_w = max(SLIDE_W, total_part_w + 2*MARGIN)`
+  - `slide_h = max(SLIDE_H, msg_y_end + 0.3)` — 이벤트 수 기반 동적 확장
+
+- **Y.4 참여자 별칭 `<br/>` 처리** (`pptx_shapes.py`):
+  - `_parse_sequence`에서 participant alias에 `_br_decode()` 적용
+  - `_add_rounded_rect`가 `\n`이 있으면 `_set_text_multiline` 자동 분기 → OK
+
+### 검증 결과
+
+| 기준 | 결과 |
+|------|------|
+| Y1 alt/Note 박스 출력 | **PASS** 이벤트 타입 msg:14, note:3, blk_start:2, blk_end:2, blk_else:1 |
+| Y2 `<br/>` 리터럴 없음 | **PASS** 0건 |
+| Y3 8 participant 슬라이드 fit | **PASS** 13.33"×11.55" (동적 높이 확장) |
+| Y4 참여자 별칭 wrap | **PASS** CLI alias `\n` 정상 처리 |
+| 3번 회귀 없음 | **PASS** shape 28개, HTML entity 0건 |
+| smoke_test_er | **PASS 12/12** |
+| assert_pptx ER | **PASS 4/4** |
+| assert_pptx custGeom | **PASS 4/4** |
+| assert_pptx regression (seq1+seq3) | **PASS 2/2** |
+
+### 파일 수정
+- `backend/converters/pptx_shapes.py`: `_br_decode`, `_SEQ_NOTE_RE`, `_SEQ_BLOCK_RE`, `_seq_add_label`, `_SEQ_BLK_COLORS`, `_parse_sequence` 전면 재설계, `_render_sequence` 전면 재설계
+
+### 신호 파일
+- `.omc/state/seq_fix_done`
