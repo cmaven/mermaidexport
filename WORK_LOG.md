@@ -586,3 +586,39 @@
 
 ### 신호 파일
 - `.omc/state/iter_8_done`
+
+---
+
+## [track-b-executor] iter-9 ER 박스 가독성 회복 + ELK 레이아웃 — 2026-05-20
+
+### 구현 완료
+
+**1. ER 박스 클램프 계수 완화** (`pptx_shapes.py` D.1):
+- iter-8의 과도한 클램프(1.2/1.4배) → 사용자 시각상 박스 너무 빠듯 → **1.6/2.0배**로 완화
+- CUSTOMER(2필드, 3줄): w **1.54"→2.20"**, h **1.08"→1.44"** (여백 충분 확보)
+- NPUClusterPolicy(5필드): h **1.65×1.6=2.5"** (상한에 도달 — 큰 entity는 보존)
+
+**2. ELK 레이아웃 엔진 도입** (`layout_engine.py`):
+- `_MMDC_ELK_CONFIG`: `"defaultRenderer": "elk"` + nodeSpacing/rankSpacing 50/50
+- 비 dense 그래프 (< 20 node) 에 ELK 적용 (dagre 대비 엣지 라우팅 품질 향상)
+- ELK 노드 크기 정규화: 중앙값 높이 > 0.5" 시 0.4" 목표 rescale
+  - ELK 원본: h=0.780", w=1.386"~1.946" → 정규화 후: h=0.400", w=1.386"~1.946" (dagre 동등)
+  - canvas 비율 개선: 12:2 (dagre, 극단적 가로) → 6:3 (ELK+norm, 균형)
+
+### 검증 결과
+
+| 기준 | 결과 |
+|------|------|
+| ER 0 shape 수 ≥ 4 | **PASS** (20개) |
+| ER 1 shape 수 ≥ 3 | **PASS** (9개) |
+| HTML entity 미노출 (양쪽) | **PASS** |
+| 노드 간 비겹침 (graph) | **PASS** |
+| edge label 충돌 없음 | **PASS** |
+| 클러스터 포함 관계 | **PASS** |
+| assert_pptx 전체 | **8/8 PASS (100%)** |
+
+### 커밋
+- `02f8882`: feat(pptx): iter-9 ER 박스 가독성 회복 + ELK 레이아웃 + 노드 정규화
+
+### 신호 파일
+- `.omc/state/iter_9_done`
