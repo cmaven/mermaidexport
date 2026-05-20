@@ -1475,9 +1475,10 @@ def mermaid_to_pptx(mermaid_code: str, title: str = "") -> bytes:
     if not mermaid_code or not mermaid_code.strip():
         raise ValueError("Mermaid 코드가 비어 있습니다.")
 
-    # 시퀀스 다이어그램 감지: 첫 줄이 sequenceDiagram이면 시퀀스 렌더링 분기
-    first_line = mermaid_code.strip().split('\n')[0].strip().lower()
-    compact_first = first_line.replace(' ', '')
+    # 시퀀스 다이어그램 감지: 첫 비-주석 라인이 sequenceDiagram이면 시퀀스 렌더링 분기
+    # `%% source: ...` 같은 주석으로 시작하는 mermaid 도 처리
+    from converters.palette import first_diagram_directive
+    compact_first = first_diagram_directive(mermaid_code)
     if 'sequencediagram' in compact_first:
         return _render_sequence(mermaid_code, title)
 

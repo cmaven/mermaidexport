@@ -962,9 +962,10 @@ def mermaid_to_excalidraw(mermaid_code: str, title: str = "") -> dict:
     Raises:
         ValueError: 파싱 결과 노드/참여자가 없는 경우.
     """
-    # 시퀀스 다이어그램 감지
-    first_line = mermaid_code.strip().split('\n')[0].strip().lower()
-    if 'sequencediagram' in first_line.replace(' ', ''):
+    # 시퀀스 다이어그램 감지 (%% 주석 라인 건너뛰고 첫 지시문 판정)
+    from converters.palette import first_diagram_directive
+    _directive = first_diagram_directive(mermaid_code)
+    if 'sequencediagram' in _directive:
         participants, messages = _parse_sequence(mermaid_code)
         elements = _build_sequence_elements(participants, messages)
         return {

@@ -42,3 +42,17 @@ def get_node_color(index: int) -> tuple[str, str]:
 def get_subgraph_color(index: int) -> tuple[str, str]:
     """인덱스에 맞는 서브그래프 색상 (fill, stroke) 반환."""
     return SUBGRAPH_COLORS[index % len(SUBGRAPH_COLORS)]
+
+
+def first_diagram_directive(mermaid_code: str) -> str:
+    """`%%` 주석/빈 줄을 건너뛰고 첫 다이어그램 지시문을 반환.
+
+    반환: lowercase + 공백 제거된 첫 비-주석 라인 (예: "erdiagram", "sequencediagram", "graphtb").
+    type 판정용. 사용자가 `%% source: ...` 같은 주석을 다이어그램 위에 두는 경우 대응.
+    """
+    for line in mermaid_code.split("\n"):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("%%"):
+            continue
+        return stripped.lower().replace(" ", "")
+    return ""

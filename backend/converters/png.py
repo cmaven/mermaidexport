@@ -96,9 +96,10 @@ def _inject_styles(mermaid_code: str) -> str:
     if any(line.strip().startswith("style ") for line in lines):
         return mermaid_code
 
-    # sequence diagram은 style 주입하지 않음
-    first_line = lines[0].strip().lower()
-    if "sequencediagram" in first_line.replace(" ", ""):
+    # sequence diagram은 style 주입하지 않음. %% 주석 라인 건너뛰고 첫 지시문 판정.
+    from converters.palette import first_diagram_directive
+    _directive = first_diagram_directive(mermaid_code)
+    if "sequencediagram" in _directive:
         return mermaid_code
 
     # 노드 ID 추출
@@ -169,10 +170,9 @@ def mermaid_to_png(mermaid_code: str, title: str = "") -> bytes:
         렌더링된 PNG 이미지의 바이트 데이터.
     """
     # 다이어그램 타입 감지 — ER/class/state는 PPTX 우회 시 회귀 위험이 있어
-    # mmdc 직접 PNG 생성을 우선 사용한다.
-    first_line_compact = (
-        mermaid_code.strip().split("\n", 1)[0].strip().lower().replace(" ", "")
-    )
+    # mmdc 직접 PNG 생성을 우선 사용한다. %% 주석 라인 건너뛰고 첫 지시문 판정.
+    from converters.palette import first_diagram_directive
+    first_line_compact = first_diagram_directive(mermaid_code)
     is_er_or_class = first_line_compact.startswith(
         ("erdiagram", "classdiagram", "statediagram")
     )

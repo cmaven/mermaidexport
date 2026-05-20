@@ -632,12 +632,13 @@ def _parse_edges(
 # ──────────────────────────────────────────────
 
 def _is_er_svg(root: etree._Element, mermaid_code: str) -> bool:
-    """SVG root class 또는 mermaid 코드 첫 줄로 ER 여부 판정."""
+    """SVG root class 또는 mermaid 코드 첫 비주석 라인으로 ER 여부 판정."""
     cls = (root.get("class") or "").lower()
     if "erdiagram" in cls.replace(" ", ""):
         return True
     if mermaid_code:
-        first = mermaid_code.strip().split("\n", 1)[0].strip().lower().replace(" ", "")
+        from converters.palette import first_diagram_directive
+        first = first_diagram_directive(mermaid_code)
         if first.startswith("erdiagram"):
             return True
     return False
@@ -1031,8 +1032,9 @@ def compute_layout_via_mmdc(
         return None
 
     # sequenceDiagram 등 비 flowchart/ER는 다른 SVG 구조 → 새 엔진 미적용
-    first_line = mermaid_code.strip().split("\n", 1)[0].strip().lower()
-    compact = first_line.replace(" ", "")
+    # `%% source: ...` 같은 주석을 건너뛰고 첫 지시문 판정
+    from converters.palette import first_diagram_directive
+    compact = first_diagram_directive(mermaid_code)
     if not (
         compact.startswith("flowchart")
         or compact.startswith("graph")

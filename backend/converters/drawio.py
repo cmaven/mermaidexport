@@ -1107,15 +1107,17 @@ def mermaid_to_drawio(mermaid_code: str, title: str = "") -> str:
         raise ValueError("mermaid_code가 비어 있습니다.")
 
     code = mermaid_code.strip()
-    first_line = code.splitlines()[0].strip()
+    # `%% source: ...` 같은 주석을 건너뛰고 첫 다이어그램 지시문 추출
+    from converters.palette import first_diagram_directive
+    directive = first_diagram_directive(code)
 
     # 시퀀스 다이어그램 분기
-    if first_line.startswith("sequenceDiagram"):
+    if directive.startswith("sequencediagram"):
         participants, messages = _parse_sequence(code)
         return _build_sequence_xml(participants, messages, title)
 
     # flowchart / graph 분기
-    if re.match(r'(?:graph|flowchart)\s+', first_line):
+    if directive.startswith("graph") or directive.startswith("flowchart"):
         direction = _detect_direction(code)
         nodes      = parse_mermaid_nodes(code)
         edges      = parse_mermaid_edges(code)
@@ -1123,7 +1125,7 @@ def mermaid_to_drawio(mermaid_code: str, title: str = "") -> str:
         return _build_flowchart_xml(nodes, edges, subgraphs, direction, title, mermaid_code=code)
 
     # erDiagram 분기 — layout_engine SVG 파서 사용 + PNG 임베드 폴백
-    if first_line.lower().replace(" ", "").startswith("erdiagram"):
+    if directive.startswith("erdiagram"):
         try:
             from converters.layout_engine import compute_layout_via_mmdc
             layout = compute_layout_via_mmdc(
