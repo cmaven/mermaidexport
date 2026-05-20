@@ -509,3 +509,47 @@
 
 ### 신호 파일
 - `.omc/state/iter_6_done`
+
+---
+
+## [track-b-executor] iter-7 smart word wrap + ER box post-upscale clamp + edge label 가독성 — 2026-05-20
+
+### 구현 완료
+
+- **`_wrap_label_smart(text, max_chars=18)`** (`pptx_shapes.py` 신규):
+  - CamelCase 경계 `([a-z])([A-Z])` → 공백 변환 후 max_chars 단위 줄 분할
+  - `_set_text()` (노드 라벨): 자동 적용 (max_chars=18 기본)
+  - `_add_edge_label_at()` (edge label): max_chars=16 기준 적용
+  - 이미 `\n`이 있으면 그대로 통과 — 기존 멀티라인 라벨 보존
+
+- **D.1 ER 박스 클램프 이동**: 업스케일 전 → 업스케일 후 (`_apply_layout_rescale` 이후)
+  - 기존: D.1 적용 → 업스케일 → 클램프 무효화 (박스 2.5" 초과 허용)
+  - 수정: 업스케일 → D.1 적용 → max 2.5"×4.0" 보장 (min은 업스케일이 보장)
+  - ER entity 과대 공백 제거, 가독성 향상
+
+- **edge label 가독성 개선** (`_add_edge_label_at()`):
+  - 항상 테두리 추가: slate #94A3B8 / 0.75pt (충돌 시 #647488 / 1.0pt)
+  - 폰트 8pt → **11pt** (최소 가독성 보장)
+  - 다중 줄 시 `word_wrap=True` 활성화
+  - `est_h`: 단일 줄 0.22" → 줄 수 × 0.24" (다중 줄 높이 보장)
+
+### 검증 결과
+
+| 기준 | 결과 |
+|------|------|
+| ER shape 수 ≥ 4 | **PASS** (실제 20개) |
+| HTML entity 미노출 | **PASS** |
+| 노드 간 비겹침 | **PASS** |
+| edge label 충돌 | **PASS** |
+| 클러스터 포함 관계 | **PASS** |
+| assert_pptx 전체 | **6/6 PASS (100%)** |
+
+### 파일 수정
+- `backend/converters/pptx_shapes.py`: `_wrap_label_smart` 추가, `_set_text` 래핑 적용, D.1 위치 이동, edge label 가독성 개선
+
+### 커밋
+- `bf8c353`: feat(pptx): iter-7 smart word wrap + ER box post-upscale clamp + edge label 가독성
+
+### 신호 파일
+- `.omc/state/iter_7_done`
+- `.omc/state/track-b-iter7-done`
