@@ -553,3 +553,36 @@
 ### 신호 파일
 - `.omc/state/iter_7_done`
 - `.omc/state/track-b-iter7-done`
+
+---
+
+## [track-b-executor] iter-8 ER entity 박스 content 비례 클램프 — 2026-05-20
+
+### 구현 완료
+
+- **D.1 ER 박스 클램프 강화** (`pptx_shapes.py`):
+  - iter-7: 고정 상한 max_h=2.5" → 업스케일 후에도 과대 박스 잔존
+  - iter-8: 라벨 줄 수/최장 행 기준 content 비례 상한 적용
+    - `content_h = n_lines × 0.25" + 0.15"` → `max_h = content_h × 1.2`
+    - `content_w = max_chars × 0.075" + 0.20"` → `max_w = content_w × 1.4`
+  - CUSTOMER (2필드, 3줄): h 2.5" → **1.08"** (content 기준 적정 크기)
+  - NPUClusterPolicy (5필드, 6줄): h **1.98"** 허용 (텍스트 표시 공간 충분)
+  - DriverInstallPolicy (3필드, 4줄): h **1.38"**, w **2.80"** (최장 행 24자)
+
+### 검증 결과
+
+| 기준 | 결과 |
+|------|------|
+| ER 0 shape 수 ≥ 4 | **PASS** |
+| ER 1 shape 수 ≥ 3 | **PASS** |
+| HTML entity 미노출 | **PASS** |
+| 노드 간 비겹침 | **PASS** |
+| edge label 충돌 | **PASS** |
+| 클러스터 포함 관계 | **PASS** |
+| assert_pptx 전체 | **6/6 PASS (100%)** |
+
+### 커밋
+- `121341b`: feat(pptx): iter-8 ER entity 박스 content 비례 클램프 강화
+
+### 신호 파일
+- `.omc/state/iter_8_done`
