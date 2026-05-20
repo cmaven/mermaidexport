@@ -478,6 +478,34 @@ def _set_shape_fill(shape, fill_color: RGBColor, stroke_color: RGBColor) -> None
     line.width = Pt(0.75)
 
 
+def _wrap_label_smart(text: str, max_chars: int = 18) -> str:
+    """CamelCase/단어 경계에서 줄바꿈을 삽입해 가독성을 높인다.
+
+    이미 \\n이 있으면 그대로 반환. CamelCase('getUserName') 경계를
+    공백으로 변환한 뒤 max_chars 기준으로 줄을 분할한다.
+    """
+    import re
+    if "\n" in text:
+        return text
+    # CamelCase 경계를 공백으로 분리
+    spaced = re.sub(r"([a-z])([A-Z])", r"\1 \2", text)
+    words = spaced.split()
+    lines: list[str] = []
+    cur: list[str] = []
+    cur_len = 0
+    for w in words:
+        extra = 1 if cur else 0  # 단어 사이 공백
+        if cur_len + extra + len(w) > max_chars and cur:
+            lines.append(" ".join(cur))
+            cur, cur_len = [w], len(w)
+        else:
+            cur.append(w)
+            cur_len += extra + len(w)
+    if cur:
+        lines.append(" ".join(cur))
+    return "\n".join(lines)
+
+
 def _set_text(shape, text: str, font_size: int = 9, bold: bool = False,
               color: RGBColor = RGBColor(0x1E, 0x29, 0x3B)) -> None:
     """도형의 텍스트 프레임을 설정한다. word_wrap=True로 줄 바꿈 허용."""
@@ -495,7 +523,7 @@ def _set_text(shape, text: str, font_size: int = 9, bold: bool = False,
     para.alignment = PP_ALIGN.CENTER
 
     run = para.add_run()
-    run.text = text
+    run.text = _wrap_label_smart(text)
     run.font.size = Pt(font_size)
     run.font.bold = bold
     run.font.color.rgb = color
@@ -2093,9 +2121,14 @@ def _add_edge_label_at(
     """
     if not label:
         return
-    # 텍스트 길이에 따른 폭 추정 (한글 한 글자 약 0.13in, 기본 0.4in)
-    est_w = max(0.5, 0.08 * len(label) + 0.2)
-    est_h = 0.22
+    # iter-7: 스마트 래핑 — 16자 초과 라벨은 CamelCase/공백 경계에서 줄 분할
+    wrapped_label = _wrap_label_smart(label, max_chars=16)
+    n_lines = wrapped_label.count("\n") + 1
+
+    # 텍스트 길이에 따른 폭/높이 추정 (한 줄 기준 0.08in/char, 다중 줄은 높이 추가)
+    longest_line = max(wrapped_label.split("\n"), key=len)
+    est_w = max(0.5, 0.08 * len(longest_line) + 0.2)
+    est_h = 0.24 * n_lines  # iter-7: 줄 수 × 0.24in
 
     # B.5: 라벨 위치 충돌 회피 — 양방향(위/아래) nudge, 최대 12회, 0.25in씩
     has_conflict = False
@@ -2133,23 +2166,24 @@ def _add_edge_label_at(
     # 배경 흰색 사각형 효과
     txb.fill.solid()
     txb.fill.fore_color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+    # iter-7: 항상 외곽선 추가 (가독성) — 충돌 시 더 진한 색
     if has_conflict:
-        # 여전히 겹침: 1px 외곽선으로 가독성 확보
+        txb.line.color.rgb = RGBColor(0x64, 0x74, 0x88)
+        txb.line.width = Pt(1.0)
+    else:
         txb.line.color.rgb = RGBColor(0x94, 0xA3, 0xB8)
         txb.line.width = Pt(0.75)
-    else:
-        txb.line.fill.background()
     tf = txb.text_frame
     tf.margin_left = Pt(2)
     tf.margin_right = Pt(2)
-    tf.margin_top = Pt(0)
-    tf.margin_bottom = Pt(0)
-    tf.word_wrap = False
+    tf.margin_top = Pt(1)
+    tf.margin_bottom = Pt(1)
+    tf.word_wrap = (n_lines > 1)  # 다중 줄이면 word_wrap 활성화
     p = tf.paragraphs[0]
     p.alignment = PP_ALIGN.CENTER
     run = p.add_run()
-    run.text = label
-    run.font.size = Pt(8)
+    run.text = wrapped_label
+    run.font.size = Pt(11)  # iter-7: 최소 11pt (가독성)
     run.font.color.rgb = RGBColor(0x47, 0x55, 0x69)
     try:
         rPr = run._r.get_or_add_rPr()
@@ -2202,15 +2236,6 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
             if not (_ni.x + _ni.w <= _nj.x or _nj.x + _nj.w <= _ni.x):
                 _nj.y = _ni.y + _ni.h + _MIN_NODE_GAP  # y 축 push-down
 
-    # ── D.1 (iter-5): ER entity 박스 크기 정규화 — 과대화/공백 과다 방지 ──────
-    if getattr(layout, 'is_er', False):
-        _ER_MIN_H, _ER_MAX_H = 0.8, 2.5
-        _ER_MIN_W, _ER_MAX_W = 1.5, 4.0
-        _ER_PAD = 0.15  # 내용 기준 여백
-        for node in layout.nodes.values():
-            node.h = max(_ER_MIN_H, min(node.h + _ER_PAD, _ER_MAX_H))
-            node.w = max(_ER_MIN_W, min(node.w + _ER_PAD, _ER_MAX_W))
-
     # ── B.3: cluster bbox를 자식 노드 합집합으로 재계산 + 겹침 해소 ─────────
     if layout.clusters:
         _recompute_cluster_bboxes(layout.nodes, layout.clusters)
@@ -2236,6 +2261,17 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
         rs = min(rs_w, rs_h)
         if rs > 1.001:  # 0.1% 이상 확대 시에만 적용
             _apply_layout_rescale(layout, rs)
+
+    # ── D.1 (iter-7 이동): ER entity 박스 크기 정규화 — 업스케일 이후 클램프 ──
+    # 업스케일 전 D.1 → 업스케일이 클램프를 무효화하는 문제 수정.
+    # 업스케일 완료 후 max 크기 초과분만 제한 (min은 업스케일이 보장).
+    if getattr(layout, 'is_er', False):
+        _ER_MIN_H, _ER_MAX_H = 0.8, 2.5
+        _ER_MIN_W, _ER_MAX_W = 1.5, 4.0
+        _ER_PAD = 0.15  # 내용 기준 여백
+        for node in layout.nodes.values():
+            node.h = max(_ER_MIN_H, min(node.h + _ER_PAD, _ER_MAX_H))
+            node.w = max(_ER_MIN_W, min(node.w + _ER_PAD, _ER_MAX_W))
 
     # PPTX 슬라이드 생성 (동적 크기)
     prs = Presentation()
