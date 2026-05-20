@@ -87,7 +87,7 @@ def _suggest_slide_dims(
     base_w = base_h * canvas_ratio
 
     # 최대 크기 클램프 (실용 한계: 32" × 20")
-    MAX_W, MAX_H = 32.0, 20.0
+    MAX_W, MAX_H = 24.0, 20.0  # iter-6: 32"→24" (PowerPoint 표준 화면 적합)
     if base_w > MAX_W:
         base_h = base_h * (MAX_W / base_w)
         base_w = MAX_W

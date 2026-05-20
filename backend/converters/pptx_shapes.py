@@ -2188,6 +2188,20 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
         cap_h = node.h * _MAX_EXPAND
         node.h = min(max(node.h, min_h), cap_h)
 
+    # ── iter-6: 노드 간 최소 간격 보장 — B.2 height expansion 후 겹침 보정 ─────
+    # dense 프리셋(40/40)으로 발생하는 0.05" 이내 미세 겹침을 y 축 push-down으로 해소.
+    _MIN_NODE_GAP = 0.08   # 최소 노드 간 수직 간격 (inches)
+    _sep_nodes = sorted(layout.nodes.values(), key=lambda n: (n.y, n.x))
+    for _si in range(len(_sep_nodes)):
+        _ni = _sep_nodes[_si]
+        for _sj in range(_si + 1, len(_sep_nodes)):
+            _nj = _sep_nodes[_sj]
+            if _nj.y >= _ni.y + _ni.h + _MIN_NODE_GAP:
+                break   # 이후 노드는 모두 충분히 아래에 있음
+            # x 겹침 확인
+            if not (_ni.x + _ni.w <= _nj.x or _nj.x + _nj.w <= _ni.x):
+                _nj.y = _ni.y + _ni.h + _MIN_NODE_GAP  # y 축 push-down
+
     # ── D.1 (iter-5): ER entity 박스 크기 정규화 — 과대화/공백 과다 방지 ──────
     if getattr(layout, 'is_er', False):
         _ER_MIN_H, _ER_MAX_H = 0.8, 2.5

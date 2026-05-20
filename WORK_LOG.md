@@ -471,3 +471,41 @@
 
 ### 신호 파일
 - `.omc/state/iter_5_done`
+
+---
+
+## [track-b-executor] iter-6 graph layout 정밀 개선 — 2026-05-20
+
+### 구현 완료
+
+- **MAX_W 32"→24" 하향** (`layout_engine.py` `_suggest_slide_dims()`):
+  - PowerPoint 표준 화면(24") 적합 크기로 상한 조정
+  - graph_diagram_0: 32"×7.5" → **24"×7.5"**
+
+- **노드 간 최소 간격 보장 gap correction** (`pptx_shapes.py`):
+  - B.2 height expansion 이후, D.1 이전에 `_MIN_NODE_GAP=0.08"` 적용
+  - y 기준 정렬 → x 겹침 확인 → y 축 push-down
+  - iter-5 graph_diagram_0 노드 겹침 1건 (0.051") 해소 ✅
+
+- **ELK 시도 (결과: dagre 유지)**:
+  - `defaultRenderer: elk` 테스트 → SVG 파싱 가능, 노드 좌표 추출 성공
+  - 단, ELK 생성 노드 크기 2.76"×1.66" (dagre 대비 매우 큼) → 시각 품질 저하 우려
+  - dagre 유지 결정
+
+### 검증 결과
+
+| 기준 | 결과 |
+|------|------|
+| assert_pptx + custGeom | **21/21 PASS** |
+| smoke_test_er | **12/12 PASS** |
+| 노드 겹침 | **0건** (iter-5 1건 회귀 해소) |
+| Portrait 슬라이드 | **0건** |
+| OOB | **0건** |
+| graph_diagram_0 슬라이드 | **24"×7.5"** (MAX_W 하향) |
+
+### 파일 수정
+- `backend/converters/layout_engine.py`: MAX_W 32→24
+- `backend/converters/pptx_shapes.py`: 노드 gap correction 추가
+
+### 신호 파일
+- `.omc/state/iter_6_done`
