@@ -59,6 +59,12 @@ _MERMAID_CONFIG = {
 }
 
 
+# type-profile: ER 다이어그램용 mmdc config (nodeSpacing=80/100 — iter-1 베스트)
+import copy as _copy
+_MERMAID_ER_CONFIG = _copy.deepcopy(_MERMAID_CONFIG)
+_MERMAID_ER_CONFIG["flowchart"]["nodeSpacing"] = 80
+_MERMAID_ER_CONFIG["flowchart"]["rankSpacing"] = 100
+
 from converters.palette import NODE_COLORS as _COLOR_PALETTE
 from converters.palette import SUBGRAPH_COLORS as _SUBGRAPH_COLORS
 
@@ -171,7 +177,8 @@ def mermaid_to_png(mermaid_code: str, title: str = "") -> bytes:
         ("erdiagram", "classdiagram", "statediagram")
     )
     if is_er_or_class:
-        return _png_via_mmdc(mermaid_code)
+        # type-profile: ER 전용 spacing (nodeSpacing=80, rankSpacing=100) 적용
+        return _png_via_mmdc(mermaid_code, config=_MERMAID_ER_CONFIG)
 
     # 1차: PPTX → LibreOffice → PNG (PPTX와 동일 결과)
     if shutil.which("libreoffice") is not None:
@@ -210,8 +217,11 @@ def _png_via_pptx(mermaid_code: str, title: str = "") -> bytes:
         return png_path.read_bytes()
 
 
-def _png_via_mmdc(mermaid_code: str) -> bytes:
-    """mmdc CLI로 PNG를 직접 생성한다 (폴백)."""
+def _png_via_mmdc(mermaid_code: str, config: dict | None = None) -> bytes:
+    """mmdc CLI로 PNG를 직접 생성한다 (폴백).
+
+    config: mmdc -c 에 전달할 Mermaid config dict. None 이면 기본 _MERMAID_CONFIG 사용.
+    """
     if not check_mmdc_available():
         raise RuntimeError(
             "mmdc(mermaid-cli)가 설치되어 있지 않습니다. "
@@ -227,8 +237,9 @@ def _png_via_mmdc(mermaid_code: str) -> bytes:
         styled_code = _inject_styles(mermaid_code)
         input_path.write_text(styled_code, encoding="utf-8")
 
+        _cfg = config if config is not None else _MERMAID_CONFIG
         config_path.write_text(
-            json.dumps(_MERMAID_CONFIG, ensure_ascii=False, indent=2),
+            json.dumps(_cfg, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 

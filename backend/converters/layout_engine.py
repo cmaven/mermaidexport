@@ -24,6 +24,8 @@ from typing import Optional
 
 from lxml import etree
 
+from converters.profiles import RenderProfile, ER_PROFILE, GRAPH_PROFILE  # type-profile
+
 logger = logging.getLogger(__name__)
 
 # E.2: mmdc SVG 레이아웃용 flowchart config — nodeSpacing/rankSpacing 확대로 화살표 뭉침 해소
@@ -170,6 +172,7 @@ class LayoutResult:
     canvas_h: float = 0.0
     scale: float = 1.0      # px → inches 변환 계수
     is_er: bool = False      # iter-5 D.1: ER 다이어그램 여부 (entity 박스 정규화용)
+    profile: Optional[RenderProfile] = None  # type-profile: 타입별 렌더링 정책
 
 
 # SVG 네임스페이스
@@ -1044,14 +1047,33 @@ def compute_layout_via_mmdc(
     try:
         with tempfile.TemporaryDirectory() as tmp:
             workdir = Path(tmp)
-            # iter-5 D.3: dense 다이어그램 (노드 ≥ 20) 은 촘촘한 spacing 프리셋 사용
-            # iter-9: 비 dense 그래프는 ELK 레이아웃 시도 (더 나은 엣지 라우팅)
+            # type-profile: 다이어그램 타입으로 profile 선택 → mmdc config 결정
+            _is_er_type = compact.startswith("erdiagram")
+            _profile = ER_PROFILE if _is_er_type else GRAPH_PROFILE
+
             _node_re = re.compile(r'^\s{4,}([A-Za-z_][A-Za-z0-9_]*)\s*[\[({"\']', re.MULTILINE)
             _est_nodes = len({m for m in _node_re.findall(mermaid_code)
                               if m not in {"subgraph", "end", "graph", "flowchart",
                                            "style", "classDef", "linkStyle"}})
-            _mmdc_cfg = _MMDC_DENSE_CONFIG if _est_nodes >= _DENSE_NODE_THRESHOLD else _MMDC_ELK_CONFIG
-            _using_elk = (_mmdc_cfg is _MMDC_ELK_CONFIG)
+
+            # profile 기반 mmdc config 결정
+            if _is_er_type:
+                # ER: 전용 spacing + dagre (ELK 미사용)
+                _mmdc_cfg = {
+                    "flowchart": {
+                        "nodeSpacing": _profile.mmdc_node_spacing,
+                        "rankSpacing": _profile.mmdc_rank_spacing,
+                        "htmlLabels": True,
+                        "useMaxWidth": False,
+                    }
+                }
+                _using_elk = False
+            elif _est_nodes >= _profile.mmdc_dense_threshold:
+                _mmdc_cfg = _MMDC_DENSE_CONFIG
+                _using_elk = False
+            else:
+                _mmdc_cfg = _MMDC_ELK_CONFIG if _profile.mmdc_use_elk else None
+                _using_elk = _profile.mmdc_use_elk
             svg_path = _run_mmdc_to_svg(
                 mermaid_code, workdir, puppeteer_config, timeout=timeout,
                 mermaid_cfg=_mmdc_cfg,
@@ -1094,6 +1116,7 @@ def compute_layout_via_mmdc(
                     canvas_h=svg_h_px * scale,
                     scale=scale,
                     is_er=True,  # iter-5 D.1: ER entity 박스 정규화 플래그
+                    profile=_profile,  # type-profile
                 )
                 # iter-2: 최소 노드 크기 보장 전역 리스케일
                 rf = _compute_rescale_factor(result, max_w=target_w_in, max_h=target_h_in)
@@ -1121,6 +1144,7 @@ def compute_layout_via_mmdc(
                 canvas_w=svg_w_px * scale,
                 canvas_h=svg_h_px * scale,
                 scale=scale,
+                profile=_profile,  # type-profile
             )
             # iter-9: ELK 노드 크기 정규화 — dagre 수준으로 스케일 다운
             # ELK 는 dagre 대비 2배 큰 노드를 생성. 중앙값 높이 기준 정규화.

@@ -2262,29 +2262,36 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
         if rs > 1.001:  # 0.1% 이상 확대 시에만 적용
             _apply_layout_rescale(layout, rs)
 
-    # ── D.1 (iter-9): ER entity 박스 content 비례 클램프 — 계수 완화 ──────────
-    # iter-8: content × 1.2/1.4 → 사용자 시각상 박스가 너무 빠듯해 가독성 저하.
-    # iter-9: content × 1.6(h) / 2.0(w) 로 완화 — 텍스트 여백 충분히 확보.
-    # 효과: CUSTOMER(2필드) 1.08" → 1.44", NPUClusterPolicy(5필드) 유지(~2.5").
+    # ── D.1 (type-profile): ER entity 박스 클램프 — profile.pptx_box_clamp_strategy 분기
+    # "fixed_max"            (ER_PROFILE 기본): 고정 상한 2.5"×4.0" + pad (iter-6 베스트)
+    # "content_proportional" (fallback):        content × 1.6/2.0 (iter-9 스타일)
     if getattr(layout, 'is_er', False):
         _ER_MIN_H, _ER_MAX_H = 0.8, 2.5
         _ER_MIN_W, _ER_MAX_W = 1.5, 4.0
-        _ER_LINE_H = 0.25   # 행당 높이 (inches, 약 9pt 맑은고딕 + 행간)
-        _ER_V_PAD  = 0.15   # 상하 여백 합계
-        _ER_CHAR_W = 0.075  # 글자당 너비 (inches, 약 9pt 맑은고딕)
-        _ER_H_PAD  = 0.20   # 좌우 여백 합계
-        for node in layout.nodes.values():
-            lbl = node.label or ""
-            lines = [ln for ln in lbl.split("\n") if ln.strip()] or [""]
-            n_lines   = max(1, len(lines))
-            max_chars = max(len(ln) for ln in lines)
-            content_h = n_lines * _ER_LINE_H + _ER_V_PAD
-            content_w = max_chars * _ER_CHAR_W + _ER_H_PAD
-            # iter-9: 계수 1.2/1.4 → 1.6/2.0 (가독성 여백 확보)
-            max_h = min(_ER_MAX_H, max(_ER_MIN_H, content_h * 1.6))
-            max_w = min(_ER_MAX_W, max(_ER_MIN_W, content_w * 2.0))
-            node.h = max(_ER_MIN_H, min(node.h, max_h))
-            node.w = max(_ER_MIN_W, min(node.w, max_w))
+        _profile = getattr(layout, 'profile', None)
+        _clamp_strategy = (_profile.pptx_box_clamp_strategy if _profile else "fixed_max")
+
+        if _clamp_strategy == "fixed_max":
+            # iter-6 스타일: 고정 상한 + 소량 패딩 — ER 기본 전략 (사용자 평가 최고)
+            _ER_PAD = 0.15
+            for node in layout.nodes.values():
+                node.h = max(_ER_MIN_H, min(node.h + _ER_PAD, _ER_MAX_H))
+                node.w = max(_ER_MIN_W, min(node.w + _ER_PAD, _ER_MAX_W))
+        else:
+            # content 비례 (iter-9 스타일): 라벨 줄 수 기반 동적 상한
+            _ER_LINE_H = 0.25; _ER_V_PAD = 0.15
+            _ER_CHAR_W = 0.075; _ER_H_PAD = 0.20
+            for node in layout.nodes.values():
+                lbl = node.label or ""
+                lines = [ln for ln in lbl.split("\n") if ln.strip()] or [""]
+                n_lines   = max(1, len(lines))
+                max_chars = max(len(ln) for ln in lines)
+                content_h = n_lines * _ER_LINE_H + _ER_V_PAD
+                content_w = max_chars * _ER_CHAR_W + _ER_H_PAD
+                max_h = min(_ER_MAX_H, max(_ER_MIN_H, content_h * 1.6))
+                max_w = min(_ER_MAX_W, max(_ER_MIN_W, content_w * 2.0))
+                node.h = max(_ER_MIN_H, min(node.h, max_h))
+                node.w = max(_ER_MIN_W, min(node.w, max_w))
 
     # PPTX 슬라이드 생성 (동적 크기)
     prs = Presentation()

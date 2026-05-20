@@ -622,3 +622,54 @@
 
 ### 신호 파일
 - `.omc/state/iter_9_done`
+
+---
+
+## [track-b-executor] iter-10 type-profile: RenderProfile 패턴 — ER vs graph 정책 분리 — 2026-05-20
+
+### 구현 완료
+
+**1. `profiles.py` 신규 생성** (`backend/converters/profiles.py`):
+- `RenderProfile` dataclass: mmdc spacing, ELK 사용 여부, dense 임계값, PPTX 박스 클램프 전략, 슬라이드 크기, viewBox 가중치
+- `ER_PROFILE`: nodeSpacing=80, rankSpacing=100, ELK 미사용, fixed_max 클램프 (2.5"×4.0"), viewBox weight=0.5
+- `GRAPH_PROFILE`: nodeSpacing=50, rankSpacing=50, ELK 사용 (dense_threshold=20), content_proportional 클램프, viewBox weight=1.0
+
+**2. `layout_engine.py`** — profile 기반 mmdc config 선택:
+- `LayoutResult`에 `profile: Optional[RenderProfile] = None` 필드 추가
+- `compute_layout_via_mmdc()`에서 다이어그램 타입 감지 → profile 선택 → mmdc config 결정
+  - ER: `_MMDC_ER_CONFIG` (nodeSpacing=80/100), ELK 미사용
+  - graph dense (≥20 node): `_MMDC_DENSE_CONFIG` (40/40), ELK 미사용
+  - graph 일반 (< 20 node): `_MMDC_ELK_CONFIG`, ELK 사용
+- 반환 `LayoutResult`에 `profile=_profile` 포함
+
+**3. `pptx_shapes.py`** — D.1 profile 전략 분기:
+- `layout.profile.pptx_box_clamp_strategy` 읽어 "fixed_max"/"content_proportional" 분기
+  - ER → "fixed_max": 패딩 +0.15", 상한 (2.5"H × 4.0"W) 고정
+  - fallback → "content_proportional": 텍스트 줄 수/길이 기반 비례 계산 (×1.6/×2.0)
+
+**4. `png.py`** — ER 전용 mmdc config 적용:
+- `_MERMAID_ER_CONFIG`: nodeSpacing=80, rankSpacing=100 (ER_PROFILE 값 동일 반영)
+- `_png_via_mmdc(mermaid_code, config=None)` 서명 확장
+- ER 다이어그램은 `_MERMAID_ER_CONFIG` 전달
+
+**5. `drawio.py`** — 변경 불필요:
+- `compute_layout_via_mmdc()`가 profile에 맞는 mmdc config를 이미 내부 적용 → 간접 수혜
+
+### 검증 결과
+
+| 기준 | 결과 |
+|------|------|
+| ER 0 shape 수 ≥ 4 | **PASS** |
+| ER 1 shape 수 ≥ 3 | **PASS** |
+| HTML entity 미노출 | **PASS** |
+| 노드 간 비겹침 | **PASS** |
+| edge label 충돌 없음 | **PASS** |
+| 클러스터 포함 관계 | **PASS** |
+| assert_pptx 전체 | **8/8 PASS (100%)** |
+| CUSTOMER 박스 fixed_max 적용 | **PASS** (4.0"×2.5") |
+
+### 커밋
+- `(pending)`: feat(converters): type-profile RenderProfile 패턴 — ER vs graph 정책 분리
+
+### 신호 파일
+- `.omc/state/type_profile_done`
