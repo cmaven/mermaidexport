@@ -2532,16 +2532,37 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
     # 배치한다. PPTX는 맑은 고딕 9pt(char_w≈0.065in)를 사용하므로 실제 wrapping이
     # dagre 예상보다 많아 박스 높이가 부족하다.
     #
-    # 근본 해결(노드 y 이동 + edge.points y 동시 스케일)은 레이아웃 전체 재설계 수준
-    # 이므로, 명시적 \n 행 기준 최소 높이만 보장하고 나머지는 PowerPoint overflow로 처리.
-    # assert_pptx: 노드 간 비겹침 PASS, HTML entity 미노출 PASS 확인됨.
+    # _fit_label_to_box 는 PPTX 실제 인치 단위(9pt 폰트)로 높이를 계산하므로,
+    # dagre pre-scale 좌표와 단위가 다르다. 예상 rescale factor(rs)를 미리 계산하여
+    # 박스 폭/높이를 PPTX 공간으로 변환한 뒤 _fit_label_to_box를 호출하고,
+    # 결과를 다시 dagre 좌표로 역변환하여 node.h를 보정한다.
+    # 이렇게 하면 rs가 매우 클 때(예: 7x) 과도한 높이 팽창을 방지한다.
     _MAX_EXPAND  = 2.2   # 원본 높이 대비 최대 확장 비율 (겹침 방지)
     _FIT_FONT_PT = 9.0   # PPTX 노드 기본 폰트 크기 (_add_node_at 기본값)
+
+    # 예상 rs 계산 (rescale 전이므로 현재 canvas 기준)
+    _b2_ratio = (layout.canvas_w / layout.canvas_h) if layout.canvas_h > 0 else None
+    _b2_sw, _b2_sh = _suggest_slide_dims(
+        len(layout.nodes), len(layout.clusters), canvas_ratio=_b2_ratio
+    )
+    _b2_aw = _b2_sw - 2 * MARGIN
+    _b2_ah = _b2_sh - TITLE_H - 2 * MARGIN
+    if layout.canvas_w > 0 and layout.canvas_h > 0:
+        _b2_rs = min(_b2_aw / layout.canvas_w, _b2_ah / layout.canvas_h)
+        _b2_rs = max(_b2_rs, 1.0)   # downscale 방지
+    else:
+        _b2_rs = 1.0
+
     for node in layout.nodes.values():
-        # B.2 개선: 박스 폭 기반 실제 word-wrap 줄 수 추정
-        fit_h, _, _ = _fit_label_to_box(node.label, node.w, node.h, font_size_pt=_FIT_FONT_PT)
+        # 박스 폭/높이를 PPTX 공간으로 변환 → _fit_label_to_box 호출 → dagre로 역변환
+        scaled_w = node.w * _b2_rs
+        scaled_h = node.h * _b2_rs
+        fit_h_pptx, _, _ = _fit_label_to_box(
+            node.label, scaled_w, scaled_h, font_size_pt=_FIT_FONT_PT
+        )
+        fit_h_dagre = fit_h_pptx / _b2_rs  # PPTX 인치 → dagre 좌표
         cap_h = node.h * _MAX_EXPAND
-        node.h = min(max(node.h, fit_h), cap_h)
+        node.h = min(max(node.h, fit_h_dagre), cap_h)
 
     # ── iter-6: 노드 간 최소 간격 보장 — B.2 height expansion 후 겹침 보정 ─────
     # dense 프리셋(40/40)으로 발생하는 0.05" 이내 미세 겹침을 y 축 push-down으로 해소.
