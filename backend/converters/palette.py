@@ -6,26 +6,27 @@
 # ============================================================
 
 # 노드 색상 팔레트: (fill_hex, stroke_hex)
-# 기존 generate_pptx_shapes.py / generate_drawio.py와 동일
+# diagram_1~8 GPT 스타일 참조 톤: Tailwind 100 fill + 700/800 stroke
 NODE_COLORS = [
-    ("#dbeafe", "#1e40af"),   # blue
-    ("#d1fae5", "#047857"),   # green
-    ("#ddd6fe", "#6d28d9"),   # purple
-    ("#fed7aa", "#c2410c"),   # orange
-    ("#fee2e2", "#dc2626"),   # red
-    ("#fef3c7", "#b45309"),   # yellow
-    ("#f0fdf4", "#166534"),   # light-green
-    ("#ede9fe", "#6d28d9"),   # light-purple
+    ("#dbeafe", "#1e40af"),   # blue       (blue-100 + blue-800)
+    ("#d1fae5", "#047857"),   # green      (emerald-100 + emerald-700)
+    ("#ddd6fe", "#6d28d9"),   # purple     (violet-100 + violet-700)
+    ("#fed7aa", "#c2410c"),   # orange     (orange-100 + orange-700)
+    ("#fee2e2", "#dc2626"),   # red        (red-100 + red-600)
+    ("#fef3c7", "#b45309"),   # yellow     (amber-100 + amber-700)
+    ("#cffafe", "#0e7490"),   # cyan       (cyan-100 + cyan-700)
+    ("#fae8ff", "#a21caf"),   # fuchsia    (fuchsia-100 + fuchsia-700)
 ]
 
 # 서브그래프 색상: (fill_hex, stroke_hex)
+# diagram_1~8 참조: Tailwind 50 fill + 500/600 stroke (옅은 파스텔 클러스터 배경)
 SUBGRAPH_COLORS = [
-    ("#f5f3ff", "#7c3aed"),   # purple-tint
-    ("#f0fdf4", "#16a34a"),   # green-tint
-    ("#eff6ff", "#3b82f6"),   # blue-tint
-    ("#fff7ed", "#ea580c"),   # orange-tint
-    ("#fffbeb", "#d97706"),   # yellow-tint
-    ("#fafaf9", "#94a3b8"),   # grey-tint
+    ("#f5f3ff", "#7c3aed"),   # purple-tint (violet-50 + violet-600)
+    ("#f0fdf4", "#16a34a"),   # green-tint  (green-50 + green-600)
+    ("#eff6ff", "#3b82f6"),   # blue-tint   (blue-50 + blue-500)
+    ("#fff7ed", "#ea580c"),   # orange-tint (orange-50 + orange-600)
+    ("#fffbeb", "#d97706"),   # yellow-tint (amber-50 + amber-600)
+    ("#ecfeff", "#06b6d4"),   # cyan-tint   (cyan-50 + cyan-500)
 ]
 
 # 텍스트/라인 공통 색상
