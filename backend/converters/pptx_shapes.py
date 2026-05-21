@@ -2624,11 +2624,19 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
         fit_h_dagre = fit_h_pptx / _b2_rs  # PPTX 인치 → dagre 좌표
         cap_h = node.h * _MAX_EXPAND
         node.h = min(max(node.h, fit_h_dagre), cap_h)
-        # F.4-revised: min-width 선택적 적용 — 노드 수 ≤ 15인 소형 다이어그램만 적용
-        # dense 가로 다이어그램(diagram_0/6 등)에서 노드 겹침 회귀 방지
-        if len(layout.nodes) <= 15:
-            node.w = max(node.w, _MIN_W_PPTX / _b2_rs)
-            node.h = max(node.h, _MIN_H_PPTX / _b2_rs)
+        # F.4-v3: 노드별 텍스트 길이 기반 min-width — 텍스트가 박스 폭 대비 부족할 때만 확장
+        # 다이어그램 전체 노드 수 임계 대신 각 노드의 텍스트 vs 현재 폭을 비교:
+        #  - 짧은 텍스트("Run", "Init") → dense 가로 다이어그램 보존 (d0/d6)
+        #  - 긴 텍스트("ensureDeviceReport") → 박스 확장 → 텍스트 잘림 해소 (d1)
+        _label_lines = (node.label or "").split('\n')
+        _max_label_line = max(_label_lines, key=len) if _label_lines else ""
+        _est_text_w_pptx = len(_max_label_line) * 0.08  # 9pt 폰트 char_w 보수 추정
+        _scaled_w = node.w * _b2_rs
+        if _scaled_w < _est_text_w_pptx * 0.7:
+            # 박스 폭이 텍스트 추정치의 70% 미만 → 여백 포함 확장
+            node.w = (_est_text_w_pptx + 0.25) / _b2_rs
+        # 최소 높이는 모든 노드 적용 (높이 잘림 부작용 < 폭 잘림)
+        node.h = max(node.h, _MIN_H_PPTX / _b2_rs)
 
     # ── iter-6: 노드 간 최소 간격 보장 — B.2 height expansion 후 겹침 보정 ─────
     # dense 프리셋(40/40)으로 발생하는 0.05" 이내 미세 겹침을 y 축 push-down으로 해소.
