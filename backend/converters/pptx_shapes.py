@@ -991,7 +991,10 @@ def _parse_sequence(mermaid_code: str) -> tuple[list[tuple[str, str]], list[dict
 def _seq_add_label(slide, text: str,
                    x_emu: int, y_emu: int, w_emu: int, h_emu: int,
                    align=PP_ALIGN.CENTER) -> None:
-    """시퀀스 메시지/Note 라벨 텍스트박스를 추가한다 (\\n 멀티라인 지원)."""
+    """시퀀스 메시지/Note 라벨 텍스트박스를 추가한다 (\\n 멀티라인 지원).
+
+    F.5: message label 폰트를 9pt floor로 설정 (가독성 WCAG 기준).
+    """
     txb = slide.shapes.add_textbox(x_emu, y_emu, w_emu, h_emu)
     tf = txb.text_frame
     tf.word_wrap = True
@@ -1005,7 +1008,7 @@ def _seq_add_label(slide, text: str,
         para.alignment = align
         run = para.add_run()
         run.text = line_text
-        run.font.size = Pt(7)
+        run.font.size = Pt(9)  # F.5: 9pt floor (이전 Pt(7) → 가독성 강제)
         run.font.color.rgb = RGBColor(0x47, 0x55, 0x69)
 
 
@@ -2598,6 +2601,9 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
     # 다이아몬드(rhombus) bounding box 대비 실제 텍스트 가용 폭/높이 = 70%
     # (_add_diamond의 각 방향 15% 여백과 일치)
     _DIAMOND_EFF = 0.70
+    # F.4: 모든 노드 최소 폭/높이 (PPTX 인치 기준) — dagre 역산으로 적용
+    _MIN_W_PPTX  = 1.8   # 9pt 맑은고딕 기준 약 14자 한 줄 가능한 최소 폭
+    _MIN_H_PPTX  = 0.55  # 텍스트 한 줄 + 상하 여백 최소 높이
 
     for node in layout.nodes.values():
         # 박스 폭/높이를 PPTX 공간으로 변환 → _fit_label_to_box 호출 → dagre로 역변환
@@ -2618,6 +2624,9 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
         fit_h_dagre = fit_h_pptx / _b2_rs  # PPTX 인치 → dagre 좌표
         cap_h = node.h * _MAX_EXPAND
         node.h = min(max(node.h, fit_h_dagre), cap_h)
+        # F.4: 최소 폭/높이 강제 — rectangle/diamond/circle 모든 shape 동일 적용
+        node.w = max(node.w, _MIN_W_PPTX / _b2_rs)
+        node.h = max(node.h, _MIN_H_PPTX / _b2_rs)
 
     # ── iter-6: 노드 간 최소 간격 보장 — B.2 height expansion 후 겹침 보정 ─────
     # dense 프리셋(40/40)으로 발생하는 0.05" 이내 미세 겹침을 y 축 push-down으로 해소.
