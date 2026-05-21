@@ -2624,9 +2624,11 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
         fit_h_dagre = fit_h_pptx / _b2_rs  # PPTX 인치 → dagre 좌표
         cap_h = node.h * _MAX_EXPAND
         node.h = min(max(node.h, fit_h_dagre), cap_h)
-        # F.4: 최소 폭/높이 강제 — rectangle/diamond/circle 모든 shape 동일 적용
-        node.w = max(node.w, _MIN_W_PPTX / _b2_rs)
-        node.h = max(node.h, _MIN_H_PPTX / _b2_rs)
+        # F.4-revised: min-width 선택적 적용 — 노드 수 ≤ 15인 소형 다이어그램만 적용
+        # dense 가로 다이어그램(diagram_0/6 등)에서 노드 겹침 회귀 방지
+        if len(layout.nodes) <= 15:
+            node.w = max(node.w, _MIN_W_PPTX / _b2_rs)
+            node.h = max(node.h, _MIN_H_PPTX / _b2_rs)
 
     # ── iter-6: 노드 간 최소 간격 보장 — B.2 height expansion 후 겹침 보정 ─────
     # dense 프리셋(40/40)으로 발생하는 0.05" 이내 미세 겹침을 y 축 push-down으로 해소.
