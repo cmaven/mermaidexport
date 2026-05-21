@@ -15,6 +15,7 @@ const API_BASE = '/api';
 
 const ENDPOINTS = {
   convert:         `${API_BASE}/convert`,
+  progress:        (jobId) => `${API_BASE}/progress/${jobId}`,
   downloadAll:     (jobId) => `${API_BASE}/download/${jobId}/all`,
   downloadOne:     (jobId, index, fmt) => `${API_BASE}/download/${jobId}/${index}/${fmt}`,
   preview:         (jobId, index) => `${API_BASE}/download/${jobId}/${index}/png`,
@@ -37,6 +38,11 @@ const dropZone       = document.getElementById('dropZone');
 const fileInput      = document.getElementById('fileInput');
 const btnPick        = document.getElementById('btnPick');
 const loadingOverlay = document.getElementById('loadingOverlay');
+const loadingText    = document.getElementById('loadingText');
+const progressBarWrap = document.getElementById('progressBarWrap');
+const progressBarFill = document.getElementById('progressBarFill');
+const progressPct    = document.getElementById('progressPct');
+const progressDetail = document.getElementById('progressDetail');
 const errorBanner    = document.getElementById('errorBanner');
 const errorMessage   = document.getElementById('errorMessage');
 const resultsSection = document.getElementById('resultsSection');
