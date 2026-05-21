@@ -147,6 +147,51 @@ def _inject_styles(mermaid_code: str) -> str:
     return result
 
 
+def _sanitize_dark_classdefs(mermaid_code: str) -> str:
+    """classDef 의 어두운 fill 색을 파스텔 톤으로 치환한다 (트랙 P).
+
+    mmdc에 넘기기 전에 어두운 classDef fill 을 자동으로 밝은 버전으로 교체한다.
+    이미 밝은 색이면 그대로 유지한다.
+
+    Args:
+        mermaid_code: 원본 Mermaid 코드.
+
+    Returns:
+        classDef fill 색이 보정된 Mermaid 코드.
+    """
+    import re
+    from converters.palette import is_color_too_dark, lighten_dark_fill
+
+    def _rewrite(m: re.Match) -> str:
+        prefix = m.group(1)    # "classDef <name> "
+        style_str = m.group(2) # "fill:#xxx,color:#yyy,..."
+        parts = [p.strip() for p in style_str.split(',')]
+        new_parts: list[str] = []
+        has_color = any(p.startswith('color:') for p in parts)
+        fill_lightened = False
+        for part in parts:
+            if part.startswith('fill:'):
+                fill_hex = part[5:].strip()
+                if is_color_too_dark(fill_hex):
+                    light, dark_text = lighten_dark_fill(fill_hex)
+                    new_parts.append(f'fill:{light}')
+                    fill_lightened = True
+                    if not has_color:
+                        new_parts.append(f'color:{dark_text}')
+                else:
+                    new_parts.append(part)
+            else:
+                new_parts.append(part)
+        return prefix + ','.join(new_parts)
+
+    return re.sub(
+        r'^(\s*classDef\s+\w+\s+)(.*)',
+        _rewrite,
+        mermaid_code,
+        flags=re.MULTILINE,
+    )
+
+
 def check_mmdc_available() -> bool:
     """mmdc CLI가 PATH에 설치되어 있는지 확인한다."""
     return shutil.which("mmdc") is not None
@@ -234,7 +279,9 @@ def _png_via_mmdc(mermaid_code: str, config: dict | None = None) -> bytes:
         output_path = tmp_path / "output.png"
         config_path = tmp_path / "config.json"
 
-        styled_code = _inject_styles(mermaid_code)
+        # 트랙 P: 어두운 classDef fill 자동 라이트 톤 치환 → style 주입
+        sanitized_code = _sanitize_dark_classdefs(mermaid_code)
+        styled_code = _inject_styles(sanitized_code)
         input_path.write_text(styled_code, encoding="utf-8")
 
         _cfg = config if config is not None else _MERMAID_CONFIG

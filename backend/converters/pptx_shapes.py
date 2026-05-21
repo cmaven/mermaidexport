@@ -1765,6 +1765,14 @@ def _parse_class_overrides(mermaid_code: str, nodes: dict) -> None:
                 if ':' in part:
                     k, v = part.split(':', 1)
                     styles[k.strip()] = v.strip()
+            # 트랙 P: 어두운 fill 자동 라이트 톤 치환
+            from converters.palette import is_color_too_dark, lighten_dark_fill
+            fill_hex = styles.get('fill', '')
+            if fill_hex and is_color_too_dark(fill_hex):
+                light_fill, dark_text = lighten_dark_fill(fill_hex)
+                styles['fill'] = light_fill
+                if 'color' not in styles:
+                    styles['color'] = dark_text
             class_styles[cname] = styles
 
     for line in mermaid_code.split('\n'):

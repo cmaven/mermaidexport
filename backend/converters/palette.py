@@ -1,7 +1,8 @@
 # ============================================================
 # palette.py: 모든 변환기가 공유하는 통합 색상 팔레트
 # 상세: PNG, PPTX, draw.io, Excalidraw 모두 동일한 색상 사용
-# 생성일: 2026-04-07 | 수정일: 2026-04-07
+#       트랙 P: 어두운 classDef fill 자동 라이트 톤 치환 헬퍼 포함
+# 생성일: 2026-04-07 | 수정일: 2026-05-21
 # ============================================================
 
 # 노드 색상 팔레트: (fill_hex, stroke_hex)
@@ -32,6 +33,62 @@ TEXT_COLOR = "#1e293b"
 LINE_COLOR = "#475569"
 EDGE_LABEL_BG = "#ffffff"
 SUBGRAPH_BORDER_FALLBACK = "#94a3b8"
+
+
+def _hex_luminance(hex_str: str) -> float:
+    """WCAG 2.1 상대 휘도(Relative Luminance) 계산. 0=검정, 1=흰색."""
+    h = hex_str.lstrip('#')
+    if len(h) == 3:
+        h = h[0] * 2 + h[1] * 2 + h[2] * 2
+    r, g, b = int(h[0:2], 16) / 255.0, int(h[2:4], 16) / 255.0, int(h[4:6], 16) / 255.0
+
+    def _lin(c: float) -> float:
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+    return 0.2126 * _lin(r) + 0.7152 * _lin(g) + 0.0722 * _lin(b)
+
+
+def is_color_too_dark(hex_str: str, threshold: float = 0.35) -> bool:
+    """fill 색상의 상대 휘도가 threshold 미만이면 True (배경으로 사용 부적합).
+
+    Args:
+        hex_str: '#rrggbb' 형식 hex 색상 문자열.
+        threshold: 0.35 기본값 — 이 미만이면 어둡다고 판정.
+
+    Returns:
+        어두운 색이면 True.
+    """
+    try:
+        return _hex_luminance(hex_str.strip()) < threshold
+    except Exception:
+        return False
+
+
+def lighten_dark_fill(hex_str: str) -> tuple[str, str]:
+    """어두운 fill → 파스텔 밝은 버전 + 어두운 텍스트색 반환.
+
+    같은 Hue(색조)를 유지하되 Saturation을 줄이고 Value를 높여
+    WCAG 가독성 기준을 만족하는 파스텔 톤을 생성한다.
+
+    Args:
+        hex_str: '#rrggbb' 형식의 어두운 fill 색상.
+
+    Returns:
+        (light_fill_hex, dark_text_hex) 튜플.
+        dark_text_hex는 항상 '#1e293b' (slate-900).
+    """
+    import colorsys
+    h = hex_str.lstrip('#')
+    if len(h) == 3:
+        h = h[0] * 2 + h[1] * 2 + h[2] * 2
+    r, g, b = int(h[0:2], 16) / 255.0, int(h[2:4], 16) / 255.0, int(h[4:6], 16) / 255.0
+    hue, sat, _val = colorsys.rgb_to_hsv(r, g, b)
+    # 파스텔 톤: 채도 절반 이하 (max 0.22), 명도 0.93
+    lr, lg, lb = colorsys.hsv_to_rgb(hue, min(sat * 0.5, 0.22), 0.93)
+    fill_hex = '#{:02x}{:02x}{:02x}'.format(
+        round(lr * 255), round(lg * 255), round(lb * 255)
+    )
+    return fill_hex, TEXT_COLOR  # '#1e293b' slate-900
 
 
 def get_node_color(index: int) -> tuple[str, str]:
