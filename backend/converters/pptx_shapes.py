@@ -619,13 +619,44 @@ def _add_diamond(slide, x: float, y: float, w: float, h: float,
                  fill: RGBColor, stroke: RGBColor,
                  text: str, font_size: int = 9,
                  text_color: RGBColor = RGBColor(0x1E, 0x29, 0x3B)) -> object:
-    """마름모 도형을 슬라이드에 추가한다."""
+    """마름모 도형을 슬라이드에 추가한다.
+
+    F.1: 내접 직사각형(bounding box의 70%) 기준으로 텍스트 여백을 설정한다.
+    PowerPoint의 DIAMOND shape 텍스트 프레임은 전체 bounding box를 쓰지만,
+    시각적으로 텍스트가 꼭짓점 부근에 있으면 diamond 경계를 벗어나 보인다.
+    각 방향 15% 여백(= 양쪽 합산 30%)을 두어 유효 텍스트 영역 = 70%를 확보한다.
+    """
     shape = slide.shapes.add_shape(
         MSO_SHAPE.DIAMOND,
         Inches(x), Inches(y), Inches(w), Inches(h)
     )
     _set_shape_fill(shape, fill, stroke)
-    _set_text(shape, text, font_size=font_size, color=text_color)
+    # F.1: 비례 여백 — 각 방향 15% (유효 폭/높이 70%)
+    tf = shape.text_frame
+    tf.word_wrap = True
+    tf.auto_size = None  # 폰트 자동 축소 비활성화 — 박스 확장으로 가독성 보장
+    tf.margin_left   = Inches(w * 0.15)
+    tf.margin_right  = Inches(w * 0.15)
+    tf.margin_top    = Inches(h * 0.15)
+    tf.margin_bottom = Inches(h * 0.15)
+    tf.clear()
+    para = tf.paragraphs[0]
+    para.alignment = PP_ALIGN.CENTER
+    run = para.add_run()
+    run.text = _wrap_label_smart(text)
+    run.font.size = Pt(max(9, font_size))  # F.2: 9pt 하한
+    run.font.color.rgb = text_color
+    # 한글/CJK 폰트: 맑은 고딕
+    try:
+        rPr = run._r.get_or_add_rPr()
+        ea = etree.SubElement(rPr, qn("a:ea"))
+        ea.set("typeface", "맑은 고딕")
+        latin = rPr.find(qn("a:latin"))
+        if latin is None:
+            latin = etree.SubElement(rPr, qn("a:latin"))
+        latin.set("typeface", "맑은 고딕")
+    except Exception:
+        pass
     _vertical_center_text(shape)
     remove_style_element(shape._element)
     _remove_shadow(shape)
@@ -2564,8 +2595,9 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
         _b2_rs = 1.0
 
     # F.1: 다이아몬드 내접 텍스트 영역 보정 인수
-    # 다이아몬드(rhombus) 바운딩 박스 대비 실제 텍스트 가용 폭/높이 ≈ 60%
-    _DIAMOND_EFF = 0.60
+    # 다이아몬드(rhombus) bounding box 대비 실제 텍스트 가용 폭/높이 = 70%
+    # (_add_diamond의 각 방향 15% 여백과 일치)
+    _DIAMOND_EFF = 0.70
 
     for node in layout.nodes.values():
         # 박스 폭/높이를 PPTX 공간으로 변환 → _fit_label_to_box 호출 → dagre로 역변환
@@ -2785,9 +2817,13 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
             )
             cx_label = _cl_tl_x + _cl_est_w / 2
             cy_label = _cl_tl_y + _cl_est_h / 2
-            # B.4/B.5: 회피 대상 = 모든 노드(src/dst 포함) + 비관련 cluster + 이미 배치된 라벨
-            #           edge label은 어떤 노드와도 겹치면 안 됨
-            label_avoid: list[tuple[float, float, float, float]] = list(all_node_bboxes.values())
+            # B.4/B.5: 회피 대상 = src/dst 제외 노드 + 비관련 cluster + 이미 배치된 라벨
+            # F.3: src/dst 엔드포인트는 라벨이 해당 엣지 위에 위치하므로 회피 대상에서 제외.
+            #      B.2 height expansion 후 tall node(3~4")와의 충돌로 nudge 실패가 급증했었음.
+            label_avoid: list[tuple[float, float, float, float]] = [
+                bbox for nid, bbox in all_node_bboxes.items()
+                if nid not in (edge.source, edge.target)
+            ]
             for cl in layout.clusters:
                 if cl.id not in (src_cl_id, dst_cl_id):
                     label_avoid.append(
