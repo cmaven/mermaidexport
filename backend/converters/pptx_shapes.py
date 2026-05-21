@@ -578,7 +578,7 @@ def _set_text_multiline(
         para.alignment = PP_ALIGN.CENTER if i == 0 else PP_ALIGN.LEFT
         run = para.add_run()
         run.text = line
-        run.font.size = Pt(font_size + 1) if i == 0 else Pt(max(6, font_size - 1))
+        run.font.size = Pt(font_size + 1) if i == 0 else Pt(max(9, font_size - 1))  # F.2: 9pt 하한
         run.font.bold = (i == 0)
         run.font.color.rgb = color
         try:
@@ -978,12 +978,20 @@ def _seq_add_label(slide, text: str,
         run.font.color.rgb = RGBColor(0x47, 0x55, 0x69)
 
 
-# alt/loop 블록 헤더 색상 맵
+# alt/loop 블록 헤더 색상 맵 (P.1: WCAG 4.5:1 통과 — 라이트 톤 + 어두운 텍스트)
 _SEQ_BLK_COLORS: dict[str, RGBColor] = {
-    "alt":  RGBColor(0x3B, 0x82, 0xF6),  # blue
-    "loop": RGBColor(0x10, 0xB9, 0x81),  # green
-    "opt":  RGBColor(0xF5, 0x9E, 0x0B),  # amber
-    "par":  RGBColor(0x8B, 0x5C, 0xF6),  # violet
+    "alt":  RGBColor(0x93, 0xC5, 0xFD),  # blue-300   (#93c5fd)
+    "loop": RGBColor(0x86, 0xEF, 0xAC),  # green-300  (#86efac)
+    "opt":  RGBColor(0xFC, 0xD3, 0x4D),  # amber-300  (#fcd34d)
+    "par":  RGBColor(0xC4, 0xB5, 0xFD),  # violet-300 (#c4b5fd)
+}
+
+# alt/loop 블록 헤더 텍스트 색상 (P.1: 라이트 배경에 맞는 어두운 텍스트)
+_SEQ_BLK_TEXT_COLORS: dict[str, RGBColor] = {
+    "alt":  RGBColor(0x1E, 0x29, 0x3B),  # slate-900
+    "loop": RGBColor(0x06, 0x4E, 0x3B),  # emerald-900
+    "opt":  RGBColor(0x78, 0x35, 0x0F),  # amber-900
+    "par":  RGBColor(0x4C, 0x1D, 0x95),  # violet-900
 }
 
 
@@ -1143,8 +1151,9 @@ def _render_sequence(mermaid_code: str, title: str = "") -> bytes:
         remove_style_element(box_shape._element)
         _remove_shadow(box_shape)
 
-        # 헤더 색상 탭 ([alt] / [loop] 등)
-        hdr_color = _SEQ_BLK_COLORS.get(kind, RGBColor(0x94, 0xA3, 0xB8))
+        # 헤더 색상 탭 ([alt] / [loop] 등) — P.1: 라이트 배경 + 어두운 텍스트
+        hdr_color = _SEQ_BLK_COLORS.get(kind, RGBColor(0xE2, 0xE8, 0xF0))
+        hdr_text_color = _SEQ_BLK_TEXT_COLORS.get(kind, RGBColor(0x1E, 0x29, 0x3B))
         hdr_shape = slide.shapes.add_shape(
             MSO_SHAPE.RECTANGLE,
             Inches(blk_box_x), Inches(by), Inches(1.0), Inches(_BLK_HEADER_H)
@@ -1165,7 +1174,7 @@ def _render_sequence(mermaid_code: str, title: str = "") -> bytes:
         run.text = f"[{kind}]"
         run.font.size = Pt(7)
         run.font.bold = True
-        run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+        run.font.color.rgb = hdr_text_color
 
         # 헤더 옆 라벨 (조건 텍스트)
         if label:
@@ -2452,14 +2461,15 @@ def _add_edge_label_at(
     est_w = max(0.5, 0.08 * len(longest_line) + 0.2)
     est_h = 0.24 * n_lines  # iter-7: 줄 수 × 0.24in
 
-    # B.5: 라벨 위치 충돌 회피 — 양방향(위/아래) nudge, 최대 12회, 0.25in씩
+    # B.5: 라벨 위치 충돌 회피 — 양방향(위/아래) nudge, 최대 32회, 0.30in씩
+    # F.3: B.2 높이 확장 후 노드가 3~4in 이상 될 수 있어 기존 ±1.5in 범위 부족 → ±4.8in으로 확대
     has_conflict = False
     if avoid_bboxes:
-        # nudge 방향 패턴: 0, -0.25, +0.25, -0.5, +0.5, -0.75, +0.75, ...
+        # nudge 방향 패턴: 0, -0.30, +0.30, -0.60, +0.60, ...
         nudge_seq = [0.0]
-        for step in range(1, 7):
-            nudge_seq.append(-step * 0.25)
-            nudge_seq.append(+step * 0.25)
+        for step in range(1, 17):
+            nudge_seq.append(-step * 0.30)
+            nudge_seq.append(+step * 0.30)
 
         best_cy = cy
         resolved = False
@@ -2553,13 +2563,26 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
     else:
         _b2_rs = 1.0
 
+    # F.1: 다이아몬드 내접 텍스트 영역 보정 인수
+    # 다이아몬드(rhombus) 바운딩 박스 대비 실제 텍스트 가용 폭/높이 ≈ 60%
+    _DIAMOND_EFF = 0.60
+
     for node in layout.nodes.values():
         # 박스 폭/높이를 PPTX 공간으로 변환 → _fit_label_to_box 호출 → dagre로 역변환
         scaled_w = node.w * _b2_rs
         scaled_h = node.h * _b2_rs
-        fit_h_pptx, _, _ = _fit_label_to_box(
-            node.label, scaled_w, scaled_h, font_size_pt=_FIT_FONT_PT
-        )
+        if node.shape == "diamond":
+            # 다이아몬드: 내접 가용 폭/높이로 줄 수 추정 후 외접 박스 크기로 역산
+            eff_w = scaled_w * _DIAMOND_EFF
+            eff_h = scaled_h * _DIAMOND_EFF
+            fit_h_pptx, _, _ = _fit_label_to_box(
+                node.label, eff_w, eff_h, font_size_pt=_FIT_FONT_PT
+            )
+            fit_h_pptx = fit_h_pptx / _DIAMOND_EFF  # 내접 → 외접 박스 높이로 변환
+        else:
+            fit_h_pptx, _, _ = _fit_label_to_box(
+                node.label, scaled_w, scaled_h, font_size_pt=_FIT_FONT_PT
+            )
         fit_h_dagre = fit_h_pptx / _b2_rs  # PPTX 인치 → dagre 좌표
         cap_h = node.h * _MAX_EXPAND
         node.h = min(max(node.h, fit_h_dagre), cap_h)
