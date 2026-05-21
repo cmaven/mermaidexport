@@ -72,8 +72,27 @@ if [ -z "$JOB_ID" ] || [ "$JOB_ID" = "None" ]; then
     fail_ "job_id 추출 실패"
     exit 1
 fi
-BLOCK_COUNT=$(echo "$CONVERT_RESP" | python3 -c "import sys,json; print(len(json.load(sys.stdin)['diagrams']))" 2>/dev/null)
-pass_ "변환 완료 — job_id=$JOB_ID, 블록 수=$BLOCK_COUNT"
+pass_ "job_id 즉시 수신 — $JOB_ID"
+
+# progressbar 폴링 (최대 120초)
+log "변환 완료 대기 중 (폴링)..."
+FINAL_RESP=""
+for i in $(seq 1 60); do
+    POLL=$(curl -sf "$BASE_URL/api/progress/$JOB_ID" 2>/dev/null || echo "")
+    POLL_STATUS=$(echo "$POLL" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','?'))" 2>/dev/null || echo "?")
+    if [ "$POLL_STATUS" = "done" ] || [ "$POLL_STATUS" = "error" ]; then
+        FINAL_RESP="$POLL"
+        log "변환 완료 (${i}×2초, status=$POLL_STATUS)"
+        break
+    fi
+    sleep 2
+done
+if [ -z "$FINAL_RESP" ]; then
+    fail_ "120초 내 변환 미완료"
+    exit 1
+fi
+BLOCK_COUNT=$(echo "$FINAL_RESP" | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('diagrams',[])))" 2>/dev/null || echo "0")
+pass_ "변환 완료 — 블록 수=$BLOCK_COUNT"
 
 # PNG + PPTX 다운로드
 log "PNG/PPTX 다운로드 중..."

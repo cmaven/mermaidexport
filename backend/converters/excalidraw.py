@@ -981,7 +981,7 @@ def mermaid_to_excalidraw(mermaid_code: str, title: str = "") -> dict:
         }
 
     # ER 다이어그램 감지 — layout_engine 사용 후 기본 요소 빌드
-    if 'erdiagram' in first_line.replace(' ', ''):
+    if 'erdiagram' in _directive.replace(' ', ''):
         try:
             from converters.layout_engine import compute_layout_via_mmdc
             er_layout = compute_layout_via_mmdc(
