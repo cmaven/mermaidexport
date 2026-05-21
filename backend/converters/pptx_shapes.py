@@ -478,11 +478,14 @@ def _set_shape_fill(shape, fill_color: RGBColor, stroke_color: RGBColor) -> None
     line.width = Pt(0.75)
 
 
-def _wrap_label_smart(text: str, max_chars: int = 18) -> str:
+def _wrap_label_smart(text: str, max_chars: int = 14) -> str:
     """CamelCase/단어 경계에서 줄바꿈을 삽입해 가독성을 높인다.
 
     이미 \\n이 있으면 그대로 반환. CamelCase('getUserName') 경계를
     공백으로 변환한 뒤 max_chars 기준으로 줄을 분할한다.
+
+    fix6: 기본 max_chars 18→14 — 긴 라벨(dense TD d1)의 조기 줄바꿈으로
+    좁은 박스에서 텍스트 잘림 해소. 짧은 라벨(≤14자)은 영향 없음.
     """
     import re
     if "\n" in text:
