@@ -1880,6 +1880,87 @@ def _estimate_required_size(
     return req_w, req_h
 
 
+def _fit_label_to_box(
+    text: str,
+    box_w_in: float,
+    box_h_in: float,
+    font_size_pt: float = 9.0,
+    pad_h: float = 0.12,
+    pad_v: float = 0.07,
+    min_font_pt: float = 9.0,  # 예약 — 현재 버전에서 폰트 축소 없음
+) -> tuple[float, float, float]:
+    """박스 폭(inches) 기반 실제 word-wrap 줄 수를 추정하고 필요 높이를 반환 (B.2 개선).
+
+    기존 ``label.count('\\n') + 1`` 방식은 명시적 개행만 카운트하므로,
+    박스 폭에 비해 긴 줄이 PPTX word-wrap될 때 줄 수가 과소 추정된다.
+    유니코드 east_asian_width 기반 문자 폭 휴리스틱으로 실제 줄 수를 계산한다.
+
+    PPTX 텍스트 프레임 기준:
+    - 좌/우 margin: 4 pt 각각 → pad_h ≈ 0.12 in
+    - 상/하 margin: 2 pt 각각 → pad_v ≈ 0.07 in
+    - 기본 폰트: 9 pt
+
+    Args:
+        text: 노드 라벨 (``\\n`` 분리 가능, ``<br/>`` 포함 가능).
+        box_w_in: 노드 박스 폭 (inches).
+        box_h_in: 노드 박스 높이 (inches, 참조용).
+        font_size_pt: 폰트 크기 (포인트). 기본 9.
+        pad_h: 수평 패딩 합계 (inches). 기본 0.12.
+        pad_v: 수직 패딩 합계 (inches). 기본 0.07.
+        min_font_pt: 최소 폰트 크기 (예약 파라미터, 현재 미사용).
+
+    Returns:
+        ``(required_h_in, box_w_in, font_size_pt)`` — B.2에서는 첫 번째 값만 사용.
+    """
+    # <br/> → \n 정규화
+    text = _br_to_newline(text)
+    if not text.strip():
+        return (max(box_h_in, 0.30), box_w_in, font_size_pt)
+
+    font_in = font_size_pt / 72.0
+    avail_w = max(0.05, box_w_in - pad_h)  # 패딩 제거 후 텍스트 가용 폭
+    LINE_H = font_in * 1.40  # 줄 간격 배율 — _estimate_required_size 와 동일
+
+    def _cw(ch: str) -> float:
+        """문자 폭 추정 (east_asian_width 기반)."""
+        try:
+            eaw = unicodedata.east_asian_width(ch)
+        except Exception:
+            eaw = 'N'
+        if eaw in ('W', 'F'):   # 한글·한자 full-width
+            return font_in * 1.05
+        if eaw == 'A':          # Ambiguous (일부 특수문자)
+            return font_in * 0.75
+        return font_in * 0.60   # ASCII narrow
+
+    total_lines = 0
+    for raw_line in text.split('\n'):
+        if not raw_line:
+            total_lines += 1
+            continue
+        words = raw_line.split(' ')
+        cur_w = 0.0
+        line_count = 1
+        for i, word in enumerate(words):
+            word_w = sum(_cw(ch) for ch in word)
+            if i == 0:
+                cur_w = word_w
+            else:
+                space_w = _cw(' ')
+                if cur_w + space_w + word_w <= avail_w:
+                    cur_w += space_w + word_w
+                else:
+                    line_count += 1
+                    cur_w = word_w
+        total_lines += line_count
+
+    if total_lines == 0:
+        total_lines = 1
+
+    required_h = max(0.30, total_lines * LINE_H + pad_v)
+    return (required_h, box_w_in, font_size_pt)
+
+
 def _recompute_cluster_bboxes(
     nodes: dict,
     clusters: list,
@@ -2454,14 +2535,13 @@ def _render_pptx_from_layout(layout, title: str = "") -> bytes:
     # 근본 해결(노드 y 이동 + edge.points y 동시 스케일)은 레이아웃 전체 재설계 수준
     # 이므로, 명시적 \n 행 기준 최소 높이만 보장하고 나머지는 PowerPoint overflow로 처리.
     # assert_pptx: 노드 간 비겹침 PASS, HTML entity 미노출 PASS 확인됨.
-    _MIN_LINE_H = 0.22
-    _VMARGIN    = 0.06
-    _MAX_EXPAND = 2.2  # 원본 높이 대비 최대 확장 비율 (겹침 방지)
+    _MAX_EXPAND  = 2.2   # 원본 높이 대비 최대 확장 비율 (겹침 방지)
+    _FIT_FONT_PT = 9.0   # PPTX 노드 기본 폰트 크기 (_add_node_at 기본값)
     for node in layout.nodes.values():
-        n_lines = max(1, node.label.count('\n') + 1)
-        min_h = _MIN_LINE_H * n_lines + _VMARGIN
+        # B.2 개선: 박스 폭 기반 실제 word-wrap 줄 수 추정
+        fit_h, _, _ = _fit_label_to_box(node.label, node.w, node.h, font_size_pt=_FIT_FONT_PT)
         cap_h = node.h * _MAX_EXPAND
-        node.h = min(max(node.h, min_h), cap_h)
+        node.h = min(max(node.h, fit_h), cap_h)
 
     # ── iter-6: 노드 간 최소 간격 보장 — B.2 height expansion 후 겹침 보정 ─────
     # dense 프리셋(40/40)으로 발생하는 0.05" 이내 미세 겹침을 y 축 push-down으로 해소.
