@@ -12,11 +12,18 @@
 </head>
 <body>
 
-  <!-- 로딩 오버레이 -->
+  <!-- 로딩 오버레이 (트랙 U: 진행률 표시) -->
   <div class="loading-overlay" id="loadingOverlay" aria-hidden="true">
     <div class="loading-box">
       <div class="spinner" role="status" aria-label="변환 중"></div>
-      <p class="loading-text">변환 중...</p>
+      <p class="loading-text" id="loadingText">변환 준비 중...</p>
+      <div class="progress-bar-wrap" id="progressBarWrap" hidden>
+        <div class="progress-bar-track">
+          <div class="progress-bar-fill" id="progressBarFill" style="width:0%"></div>
+        </div>
+        <span class="progress-pct" id="progressPct">0%</span>
+      </div>
+      <p class="progress-detail" id="progressDetail" hidden></p>
     </div>
   </div>
 

@@ -1,7 +1,8 @@
 # ============================================================
 # main.py: Mermaid Web Converter FastAPI 서버
 # 상세: MD 파일 업로드 → Mermaid 블록 추출 → 다중 포맷 변환 API
-# 생성일: 2026-04-07 | 수정일: 2026-05-18
+#       U: /api/convert 즉시 job_id 반환 + 백그라운드 변환 + /api/progress/{job_id} 폴링
+# 생성일: 2026-04-07 | 수정일: 2026-05-21
 # ============================================================
 
 import io
@@ -11,7 +12,7 @@ import uuid as _uuid
 import zipfile
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -73,15 +74,175 @@ async def health() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# POST /api/convert
+# 진행률 기록 헬퍼 (트랙 U)
+# ---------------------------------------------------------------------------
+
+
+def _write_progress(job_dir: Path, data: dict) -> None:
+    """progress.json을 임시 파일 경유로 원자적으로 기록한다."""
+    tmp = job_dir / "progress.tmp.json"
+    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    tmp.rename(job_dir / "progress.json")
+
+
+# ---------------------------------------------------------------------------
+# 백그라운드 변환 함수 (트랙 U)
+# ---------------------------------------------------------------------------
+
+
+def _run_conversion_bg(job_dir: Path, blocks: list[dict], job_id: str) -> None:
+    """백그라운드에서 다중 포맷 변환 후 progress.json에 기록한다.
+
+    BackgroundTasks는 sync 함수를 threadpool에서 실행하므로 blocking IO 안전.
+    """
+    _FMTS = ["png", "drawio", "excalidraw", "pptx", "md"]
+    n_blocks = len(blocks)
+    total_steps = n_blocks * len(_FMTS)
+    completed = 0
+    diagrams: list[dict] = []
+
+    def _upd(block_idx: int, fmt: str, title: str) -> None:
+        pct = int(completed / total_steps * 100) if total_steps else 0
+        _write_progress(job_dir, {
+            "status": "running",
+            "percent": pct,
+            "current_block": block_idx + 1,
+            "total_blocks": n_blocks,
+            "current_format": fmt,
+            "current_title": title,
+        })
+
+    try:
+        for i, block in enumerate(blocks):
+            mermaid_code = block.get("mermaid_code", "")
+            title = block.get("title", f"diagram_{i}")
+            formats: dict[str, str | None] = {}
+            errors: dict[str, str] = {}
+
+            # PNG
+            _upd(i, "png", title)
+            try:
+                png_bytes = mermaid_to_png(mermaid_code, title)
+                (job_dir / f"diagram_{i}.png").write_bytes(png_bytes)
+                formats["png"] = f"/api/download/{job_id}/{i}/png"
+            except Exception as exc:
+                formats["png"] = None
+                errors["png"] = str(exc)
+            completed += 1
+
+            # Draw.io
+            _upd(i, "drawio", title)
+            try:
+                drawio_content = mermaid_to_drawio(mermaid_code)
+                out = job_dir / f"diagram_{i}.drawio"
+                if isinstance(drawio_content, bytes):
+                    out.write_bytes(drawio_content)
+                else:
+                    out.write_text(drawio_content, encoding="utf-8")
+                formats["drawio"] = f"/api/download/{job_id}/{i}/drawio"
+            except Exception as exc:
+                formats["drawio"] = None
+                errors["drawio"] = str(exc)
+            completed += 1
+
+            # Excalidraw
+            _upd(i, "excalidraw", title)
+            try:
+                excalidraw_data = mermaid_to_excalidraw(mermaid_code)
+                (job_dir / f"diagram_{i}.excalidraw").write_text(
+                    json.dumps(excalidraw_data, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                formats["excalidraw"] = f"/api/download/{job_id}/{i}/excalidraw"
+            except Exception as exc:
+                formats["excalidraw"] = None
+                errors["excalidraw"] = str(exc)
+            completed += 1
+
+            # PPTX
+            _upd(i, "pptx", title)
+            try:
+                pptx_bytes = mermaid_to_pptx(mermaid_code)
+                (job_dir / f"diagram_{i}.pptx").write_bytes(pptx_bytes)
+                formats["pptx"] = f"/api/download/{job_id}/{i}/pptx"
+            except Exception as exc:
+                formats["pptx"] = None
+                errors["pptx"] = str(exc)
+            completed += 1
+
+            # MD 원본
+            _upd(i, "md", title)
+            try:
+                (job_dir / f"diagram_{i}.md").write_text(
+                    f"```mermaid\n{mermaid_code}\n```\n", encoding="utf-8"
+                )
+                formats["md"] = f"/api/download/{job_id}/{i}/md"
+            except Exception as exc:
+                formats["md"] = None
+                errors["md"] = str(exc)
+            completed += 1
+
+            entry: dict = {
+                "index": i,
+                "title": title,
+                "mermaid_code": mermaid_code,
+                "formats": formats,
+                "preview": formats.get("png"),
+            }
+            if errors:
+                entry["errors"] = errors
+            diagrams.append(entry)
+
+        # metadata.json 저장 (combined-pptx 엔드포인트용)
+        metadata_blocks = [
+            {"title": b.get("title", f"diagram_{j}"), "mermaid_code": b.get("mermaid_code", "")}
+            for j, b in enumerate(blocks)
+        ]
+        (job_dir / "metadata.json").write_text(
+            json.dumps({"blocks": metadata_blocks}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        # 합본 PPTX (2개 이상)
+        if len(blocks) >= 2:
+            try:
+                combined_bytes = create_combined_pptx(metadata_blocks)
+                (job_dir / "combined.pptx").write_bytes(combined_bytes)
+            except Exception:
+                pass
+
+        # 완료
+        _write_progress(job_dir, {
+            "status": "done",
+            "percent": 100,
+            "total_blocks": n_blocks,
+            "job_id": job_id,
+            "diagrams": diagrams,
+        })
+
+    except Exception as exc:
+        _write_progress(job_dir, {
+            "status": "error",
+            "percent": 0,
+            "error": str(exc),
+        })
+
+
+# ---------------------------------------------------------------------------
+# POST /api/convert — 즉시 job_id 반환 + 백그라운드 변환 (트랙 U)
 # ---------------------------------------------------------------------------
 
 
 @app.post("/api/convert")
-async def convert(file: UploadFile = File(...)) -> JSONResponse:
-    """MD 파일을 업로드받아 Mermaid 블록을 추출하고 다중 포맷으로 변환한다."""
+async def convert(
+    file: UploadFile = File(...),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+) -> JSONResponse:
+    """MD 파일을 업로드받아 Mermaid 블록을 추출하고 백그라운드 변환을 시작한다.
 
-    # 파일 확장자 검증
+    즉시 ``{job_id, status, total_blocks}`` 를 반환한다.
+    변환 진행률은 ``GET /api/progress/{job_id}`` 로 폴링한다.
+    """
     filename = file.filename or ""
     if not filename.lower().endswith(".md"):
         raise HTTPException(status_code=400, detail="'.md' 파일만 업로드할 수 있습니다.")
@@ -91,7 +252,6 @@ async def convert(file: UploadFile = File(...)) -> JSONResponse:
         raise HTTPException(status_code=413, detail="파일 크기가 10MB를 초과합니다.")
     md_text = content_bytes.decode("utf-8", errors="replace")
 
-    # Mermaid 블록 파싱
     blocks = parse_mermaid_blocks(md_text)
     if not blocks:
         raise HTTPException(
@@ -99,112 +259,56 @@ async def convert(file: UploadFile = File(...)) -> JSONResponse:
             detail="업로드된 MD 파일에서 Mermaid 블록을 찾을 수 없습니다.",
         )
 
-    # 작업 디렉토리 생성
     job_id = str(_uuid.uuid4())
     job_dir = JOBS_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
 
-    diagrams = []
+    _write_progress(job_dir, {
+        "status": "queued",
+        "percent": 0,
+        "total_blocks": len(blocks),
+        "current_block": 0,
+        "current_format": "",
+        "current_title": "",
+    })
 
-    for i, block in enumerate(blocks):
-        mermaid_code = block.get("mermaid_code", "")
-        title = block.get("title", f"diagram_{i}")
+    background_tasks.add_task(_run_conversion_bg, job_dir, blocks, job_id)
 
-        formats: dict[str, str | None] = {}
-        errors: dict[str, str] = {}
+    return JSONResponse({
+        "job_id": job_id,
+        "status": "queued",
+        "total_blocks": len(blocks),
+    })
 
-        # PNG 변환
-        try:
-            png_bytes = mermaid_to_png(mermaid_code, title)
-            out_path = job_dir / f"diagram_{i}.png"
-            out_path.write_bytes(png_bytes)
-            formats["png"] = f"/api/download/{job_id}/{i}/png"
-        except Exception as exc:
-            formats["png"] = None
-            errors["png"] = str(exc)
 
-        # Draw.io 변환
-        try:
-            drawio_content = mermaid_to_drawio(mermaid_code)
-            out_path = job_dir / f"diagram_{i}.drawio"
-            if isinstance(drawio_content, bytes):
-                out_path.write_bytes(drawio_content)
-            else:
-                out_path.write_text(drawio_content, encoding="utf-8")
-            formats["drawio"] = f"/api/download/{job_id}/{i}/drawio"
-        except Exception as exc:
-            formats["drawio"] = None
-            errors["drawio"] = str(exc)
+# ---------------------------------------------------------------------------
+# GET /api/progress/{job_id} — 변환 진행률 폴링 (트랙 U)
+# ---------------------------------------------------------------------------
 
-        # Excalidraw 변환
-        try:
-            excalidraw_data = mermaid_to_excalidraw(mermaid_code)
-            out_path = job_dir / f"diagram_{i}.excalidraw"
-            out_path.write_text(json.dumps(excalidraw_data, ensure_ascii=False, indent=2), encoding="utf-8")
-            formats["excalidraw"] = f"/api/download/{job_id}/{i}/excalidraw"
-        except Exception as exc:
-            formats["excalidraw"] = None
-            errors["excalidraw"] = str(exc)
 
-        # PPTX 변환
-        try:
-            pptx_bytes = mermaid_to_pptx(mermaid_code)
-            out_path = job_dir / f"diagram_{i}.pptx"
-            out_path.write_bytes(pptx_bytes)
-            formats["pptx"] = f"/api/download/{job_id}/{i}/pptx"
-        except Exception as exc:
-            formats["pptx"] = None
-            errors["pptx"] = str(exc)
+@app.get("/api/progress/{job_id}")
+async def get_progress(job_id: str) -> JSONResponse:
+    """progress.json을 읽어 변환 진행 상태를 반환한다."""
+    try:
+        _uuid.UUID(job_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="잘못된 job_id 형식입니다.")
 
-        # Mermaid 원본(.md) 저장
-        try:
-            md_content = f"```mermaid\n{mermaid_code}\n```\n"
-            out_path = job_dir / f"diagram_{i}.md"
-            out_path.write_text(md_content, encoding="utf-8")
-            formats["md"] = f"/api/download/{job_id}/{i}/md"
-        except Exception as exc:
-            formats["md"] = None
-            errors["md"] = str(exc)
+    job_dir = (JOBS_DIR / job_id).resolve()
+    if not str(job_dir).startswith(str(JOBS_DIR.resolve())):
+        raise HTTPException(status_code=400, detail="잘못된 요청입니다.")
 
-        # 미리보기는 PNG 우선; PNG가 없으면 null
-        preview = formats.get("png")
+    if not job_dir.exists():
+        raise HTTPException(status_code=404, detail=f"작업을 찾을 수 없습니다: job_id={job_id}")
 
-        diagram_entry: dict = {
-            "index": i,
-            "title": title,
-            "mermaid_code": mermaid_code,
-            "formats": formats,
-            "preview": preview,
-        }
-        if errors:
-            diagram_entry["errors"] = errors
+    progress_path = job_dir / "progress.json"
+    if not progress_path.exists():
+        return JSONResponse({"status": "queued", "percent": 0, "total_blocks": 0})
 
-        diagrams.append(diagram_entry)
-
-    # metadata.json 저장 (combined-pptx 엔드포인트에서 사용)
-    metadata_blocks = [
-        {"title": block.get("title", f"diagram_{i}"), "mermaid_code": block.get("mermaid_code", "")}
-        for i, block in enumerate(blocks)
-    ]
-    (job_dir / "metadata.json").write_text(
-        json.dumps({"blocks": metadata_blocks}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-    # 합본 PPTX 생성 (2개 이상 다이어그램일 때)
-    if len(blocks) >= 2:
-        try:
-            combined_bytes = create_combined_pptx(metadata_blocks)
-            (job_dir / "combined.pptx").write_bytes(combined_bytes)
-        except Exception:
-            pass  # 합본 실패해도 다른 포맷은 정상 제공
-
-    return JSONResponse(
-        content={
-            "job_id": job_id,
-            "diagrams": diagrams,
-        }
-    )
+    try:
+        return JSONResponse(json.loads(progress_path.read_text(encoding="utf-8")))
+    except Exception:
+        return JSONResponse({"status": "queued", "percent": 0, "total_blocks": 0})
 
 
 # ---------------------------------------------------------------------------
