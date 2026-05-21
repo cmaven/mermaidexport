@@ -235,8 +235,8 @@ def _run_conversion_bg(job_dir: Path, blocks: list[dict], job_id: str) -> None:
 
 @app.post("/api/convert")
 async def convert(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    background_tasks: BackgroundTasks = BackgroundTasks(),
 ) -> JSONResponse:
     """MD 파일을 업로드받아 Mermaid 블록을 추출하고 백그라운드 변환을 시작한다.
 

@@ -123,15 +123,63 @@ async function parseApiError(response) {
 }
 
 // ============================================================
-// 파일 업로드 및 변환 API 호출
+// 진행률 UI 헬퍼 (트랙 U)
 // ============================================================
+
+/** 진행률 바와 상세 텍스트를 업데이트합니다. */
+function updateProgress(pct, detailText) {
+  const p = Math.min(100, Math.max(0, pct));
+  progressBarFill.style.width = `${p}%`;
+  progressPct.textContent = `${p}%`;
+  if (detailText) {
+    progressDetail.textContent = detailText;
+    progressDetail.hidden = false;
+  }
+}
+
+/** 로딩 오버레이를 진행률 모드로 전환합니다. */
+function showProgressMode() {
+  progressBarWrap.hidden = false;
+  progressDetail.hidden = false;
+  updateProgress(0, '');
+}
+
+/** 로딩 오버레이를 초기 스피너 모드로 초기화합니다. */
+function resetProgressUI() {
+  loadingText.textContent = '변환 준비 중...';
+  progressBarWrap.hidden = true;
+  progressDetail.hidden = true;
+  progressBarFill.style.width = '0%';
+  progressPct.textContent = '0%';
+  progressDetail.textContent = '';
+}
+
+/** 포맷 이름을 표시용 라벨로 변환합니다. */
+function fmtLabel(fmt) {
+  return { png: 'PNG', drawio: 'Draw.io', excalidraw: 'Excalidraw', pptx: 'PPTX', md: 'MD' }[fmt] || fmt;
+}
+
+// ============================================================
+// 파일 업로드 및 변환 API 호출 (트랙 U: progress 폴링)
+// ============================================================
+
+/** 폴링 타이머 ID */
+let _pollTimer = null;
+
+/** 폴링을 중단합니다. */
+function stopPolling() {
+  if (_pollTimer !== null) {
+    clearInterval(_pollTimer);
+    _pollTimer = null;
+  }
+}
 
 /**
  * MD 파일을 서버에 업로드하고 변환을 요청합니다.
+ * 즉시 job_id를 받아 1초 간격으로 진행률을 폴링합니다.
  * @param {File} file
  */
 async function uploadFile(file) {
-  // 파일 유효성 검사
   if (!file) return;
 
   const isMarkdown = file.name.endsWith('.md') || file.type === 'text/markdown' || file.type === 'text/plain';
@@ -146,6 +194,8 @@ async function uploadFile(file) {
   }
 
   clearError();
+  stopPolling();
+  resetProgressUI();
   setLoading(true);
 
   try {
@@ -162,28 +212,73 @@ async function uploadFile(file) {
       throw new Error(errMsg);
     }
 
-    const data = await response.json();
-
-    if (!data.job_id) {
+    const initData = await response.json();
+    if (!initData.job_id) {
       throw new Error('서버 응답이 올바르지 않습니다. 다시 시도해주세요.');
     }
 
-    if (!data.diagrams || data.diagrams.length === 0) {
-      throw new Error('파일에서 Mermaid 다이어그램을 찾지 못했습니다. 파일 내용을 확인해주세요.');
-    }
+    currentJobId = initData.job_id;
+    const totalBlocks = initData.total_blocks || 1;
 
-    currentJobId = data.job_id;
-    renderResults(data);
+    // 진행률 모드로 전환
+    loadingText.textContent = `변환 중... (다이어그램 ${totalBlocks}개)`;
+    showProgressMode();
+
+    // 1초 폴링 시작
+    await new Promise((resolve, reject) => {
+      _pollTimer = setInterval(async () => {
+        try {
+          const pr = await fetch(ENDPOINTS.progress(currentJobId));
+          if (!pr.ok) return; // 일시적 실패 무시, 계속 폴링
+
+          const prog = await pr.json();
+          const pct = prog.percent ?? 0;
+
+          // 상세 텍스트 구성
+          let detail = '';
+          if (prog.status === 'running' && prog.current_block) {
+            detail = `다이어그램 ${prog.current_block}/${prog.total_blocks || totalBlocks}`;
+            if (prog.current_format) {
+              detail += ` — ${fmtLabel(prog.current_format)}`;
+            }
+            if (prog.current_title) {
+              detail += ` (${prog.current_title})`;
+            }
+          } else if (prog.status === 'queued') {
+            detail = '대기 중...';
+          }
+
+          updateProgress(pct, detail);
+
+          if (prog.status === 'done') {
+            stopPolling();
+            if (!prog.diagrams || prog.diagrams.length === 0) {
+              reject(new Error('파일에서 Mermaid 다이어그램을 찾지 못했습니다.'));
+              return;
+            }
+            resolve(prog);
+          } else if (prog.status === 'error') {
+            stopPolling();
+            reject(new Error(prog.error || '변환 중 오류가 발생했습니다.'));
+          }
+        } catch (pollErr) {
+          // 네트워크 일시 오류 — 계속 폴링
+        }
+      }, 1000);
+    }).then((prog) => {
+      renderResults({ job_id: currentJobId, diagrams: prog.diagrams });
+    });
 
   } catch (err) {
+    stopPolling();
     if (err.name === 'TypeError') {
-      // 네트워크 연결 실패
       showError('서버에 연결할 수 없습니다. 네트워크 상태를 확인해주세요.');
     } else {
       showError(err.message);
     }
   } finally {
     setLoading(false);
+    resetProgressUI();
   }
 }
 
