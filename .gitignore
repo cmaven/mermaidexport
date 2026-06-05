@@ -55,3 +55,12 @@ CLAUDE.md
 ~$*.pptx
 jobs/
 *.log
+
+# ============================================================
+# 작업 예제/산출물 (내부 아키텍처 — 커밋 금지)
+# ============================================================
+result/
+result_*.png
+13_architecture_reference.md
+draw.io(svg)example.png
+mermaid_example.png

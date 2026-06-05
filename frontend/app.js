@@ -25,6 +25,7 @@ const FORMAT_META = {
   drawio:     { label: 'Draw.io',   cls: 'btn-drawio', ext: 'drawio'  },
   excalidraw: { label: 'Excalidraw',cls: 'btn-excali', ext: 'excalidraw' },
   pptx:       { label: 'PPTX',      cls: 'btn-pptx',   ext: 'pptx'   },
+  svg:        { label: 'SVG',        cls: 'btn-svg',    ext: 'svg'    },
 };
 
 // ============================================================
@@ -280,7 +281,7 @@ function createDiagramCard(jobId, diagram, cardIndex) {
   actions.className = 'diagram-actions';
 
   Object.entries(FORMAT_META).forEach(([fmt, meta]) => {
-    const btn = createDownloadButton(jobId, idx, fmt, meta);
+    const btn = createDownloadButton(jobId, idx, fmt, meta, diagram.formats?.[fmt]);
     actions.appendChild(btn);
   });
 
@@ -288,7 +289,105 @@ function createDiagramCard(jobId, diagram, cardIndex) {
   card.appendChild(preview);
   card.appendChild(actions);
 
+  // Mermaid 원본 렌더링 보기 (실제 렌더된 그래프 — SVG 인라인, 지연 로딩)
+  card.appendChild(createMermaidRenderBlock(jobId, idx, title));
+
+  if (diagram.mermaid_code) {
+    const codeBlock = document.createElement('details');
+    codeBlock.className = 'mermaid-source';
+    const summary = document.createElement('summary');
+    summary.textContent = 'Mermaid 원본 코드 보기';
+    codeBlock.appendChild(summary);
+
+    const pre = document.createElement('pre');
+    pre.className = 'mermaid-code';
+    const code = document.createElement('code');
+    code.textContent = diagram.mermaid_code;
+    pre.appendChild(code);
+
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'btn-copy-code';
+    copyBtn.type = 'button';
+    copyBtn.textContent = '복사';
+    copyBtn.addEventListener('click', async () => {
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(diagram.mermaid_code);
+        } else {
+          // HTTP/비보안 컨텍스트 폴백
+          const ta = document.createElement('textarea');
+          ta.value = diagram.mermaid_code;
+          ta.style.position = 'fixed'; ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+        }
+        copyBtn.textContent = '복사됨 ✓';
+        setTimeout(() => { copyBtn.textContent = '복사'; }, 1500);
+      } catch (err) {
+        copyBtn.textContent = '복사 실패';
+      }
+    });
+
+    codeBlock.appendChild(copyBtn);
+    codeBlock.appendChild(pre);
+    card.appendChild(codeBlock);
+  }
+
   return card;
+}
+
+/**
+ * "Mermaid 원본 렌더링 보기" 접는 메뉴를 생성합니다.
+ * 백엔드가 mmdc로 생성한 SVG(실제 렌더된 그래프)를 인라인하며,
+ * 메뉴를 처음 펼칠 때 한 번만 지연 로딩합니다.
+ * @param {string} jobId
+ * @param {number} index - 다이어그램 인덱스
+ * @param {string} title - 접근성 라벨용 제목
+ * @returns {HTMLElement} <details> 요소
+ */
+function createMermaidRenderBlock(jobId, index, title) {
+  const block = document.createElement('details');
+  block.className = 'mermaid-render';
+
+  const summary = document.createElement('summary');
+  summary.textContent = 'Mermaid 원본 렌더링 보기';
+  block.appendChild(summary);
+
+  const body = document.createElement('div');
+  body.className = 'mermaid-render-body';
+  body.innerHTML = '<span class="mermaid-render-status">펼치면 그래프를 불러옵니다…</span>';
+  block.appendChild(body);
+
+  let loaded = false;
+  block.addEventListener('toggle', async () => {
+    if (!block.open || loaded) return;
+    loaded = true;
+    body.innerHTML = '<span class="mermaid-render-status">불러오는 중…</span>';
+    try {
+      const res = await fetch(ENDPOINTS.downloadOne(jobId, index, 'svg'));
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const svgText = await res.text();
+      if (!svgText.includes('<svg')) throw new Error('SVG 형식이 아님');
+      body.innerHTML = svgText;
+      const svgEl = body.querySelector('svg');
+      if (svgEl) {
+        svgEl.removeAttribute('width');
+        svgEl.removeAttribute('height');
+        svgEl.setAttribute('role', 'img');
+        svgEl.setAttribute('aria-label', `${title} Mermaid 렌더링`);
+      }
+    } catch (err) {
+      loaded = false; // 실패 시 재시도 허용
+      body.innerHTML =
+        '<span class="mermaid-render-status mermaid-render-error">'
+        + '렌더링 미리보기를 불러올 수 없습니다. (SVG 변환 실패 또는 mmdc 미설치)'
+        + '</span>';
+    }
+  });
+
+  return block;
 }
 
 /**
@@ -314,13 +413,24 @@ function createPreviewPlaceholder() {
  * @param {number} index
  * @param {string} fmt
  * @param {{ label: string, cls: string, ext: string }} meta
+ * @param {string|null|undefined} formatUrl - 변환 결과 URL (null이면 비활성 처리)
  * @returns {HTMLAnchorElement}
  */
-function createDownloadButton(jobId, index, fmt, meta) {
+function createDownloadButton(jobId, index, fmt, meta, formatUrl) {
   const a = document.createElement('a');
   a.className = `btn-download ${meta.cls}`;
-  a.href = ENDPOINTS.downloadOne(jobId, index, fmt);
-  a.download = `diagram_${index + 1}.${meta.ext}`;
+
+  if (formatUrl === null || formatUrl === undefined) {
+    a.classList.add('btn-disabled');
+    a.removeAttribute('href');
+    a.title = `${meta.label} 변환 실패 — 사용할 수 없음`;
+    a.setAttribute('aria-disabled', 'true');
+    a.addEventListener('click', (e) => e.preventDefault());
+  } else {
+    a.href = ENDPOINTS.downloadOne(jobId, index, fmt);
+    a.download = `diagram_${index + 1}.${meta.ext}`;
+  }
+
   a.setAttribute('aria-label', `다이어그램 ${index + 1} ${meta.label} 다운로드`);
 
   // 아이콘 (다운로드 화살표)

@@ -248,3 +248,62 @@ def _png_via_mmdc(mermaid_code: str) -> bytes:
             raise RuntimeError("출력 PNG 파일이 생성되지 않았습니다.")
 
         return output_path.read_bytes()
+
+
+def mermaid_to_svg(mermaid_code: str) -> bytes:
+    """Mermaid 코드를 SVG 바이트로 변환한다 (mmdc 기반).
+
+    Args:
+        mermaid_code: 변환할 Mermaid 다이어그램 코드 문자열.
+
+    Returns:
+        렌더링된 SVG 이미지의 바이트 데이터.
+    """
+    if not check_mmdc_available():
+        raise RuntimeError(
+            "mmdc(mermaid-cli)가 설치되어 있지 않습니다. "
+            "설치 방법: npm install -g @mermaid-js/mermaid-cli"
+        )
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        input_path = tmp_path / "input.mmd"
+        output_path = tmp_path / "output.svg"
+        config_path = tmp_path / "config.json"
+
+        styled_code = _inject_styles(mermaid_code)
+        input_path.write_text(styled_code, encoding="utf-8")
+
+        config_path.write_text(
+            json.dumps(_MERMAID_CONFIG, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        css_path = tmp_path / "style.css"
+        css_path.write_text(_COMMON_CSS, encoding="utf-8")
+
+        # Puppeteer config (Docker root 환경에서 --no-sandbox 필요)
+        puppeteer_config = Path(__file__).resolve().parent.parent / "puppeteer-config.json"
+
+        cmd = [
+            "mmdc",
+            "-i", str(input_path),
+            "-o", str(output_path),
+            "-b", "transparent",
+            "-c", str(config_path),
+            "--cssFile", str(css_path),
+        ]
+        if puppeteer_config.exists():
+            cmd += ["-p", str(puppeteer_config)]
+
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=60,
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("mmdc SVG 변환 시간 초과 (60초).")
+
+        if result.returncode != 0 or not output_path.exists():
+            raise RuntimeError(f"mmdc SVG 렌더링 실패: {result.stderr.strip()}")
+
+        return output_path.read_bytes()

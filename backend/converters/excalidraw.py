@@ -1,8 +1,8 @@
 # ============================================================
 # excalidraw.py: Mermaid → Excalidraw JSON 범용 변환기
 # 상세: Mermaid 코드를 파싱하여 Excalidraw에서 편집 가능한 JSON 생성
-#       flowchart/graph 및 sequenceDiagram 지원
-# 생성일: 2026-04-07 | 수정일: 2026-04-07
+#       flowchart/graph, sequenceDiagram(제어 프레임·Note 포함), erDiagram(속성 테이블) 지원
+# 생성일: 2026-04-07 | 수정일: 2026-06-05
 # ============================================================
 
 import json
@@ -14,6 +14,7 @@ from typing import Optional
 
 # ── 색상 팔레트 (공통 palette.py에서 가져옴) ──────────────────────
 from converters.palette import NODE_COLORS, SUBGRAPH_COLORS
+from converters.text_metrics import estimate_text_size_px
 
 _NODE_COLORS = [
     {"fill": fill, "stroke": stroke} for fill, stroke in NODE_COLORS
@@ -39,6 +40,21 @@ _SEQ_MESSAGE_V_SPACING = 70        # 메시지 간 수직 간격
 _SEQ_START_X = 60
 _SEQ_START_Y = 60
 _LINE_COLOR = "#475569"
+
+# ── 시퀀스 제어 프레임 + 노트 상수 ────────────────────────────
+_SEQ_FRAME_PADDING = 10     # 프레임이 참여자 범위를 넘는 여백(px)
+_SEQ_NOTE_HEIGHT = 44       # Note 박스 높이
+_SEQ_NOTE_PADDING = 6       # Note 박스 아래 여백
+
+# ── ER 다이어그램 레이아웃 상수 ─────────────────────────────────
+_ER_ENTITY_WIDTH = 200      # 엔티티 박스 폭
+_ER_HEADER_HEIGHT = 36      # 헤더(엔티티명) 줄 높이
+_ER_ROW_HEIGHT = 22         # 속성 행 높이
+_ER_H_GAP = 80              # 엔티티 간 수평 간격
+_ER_V_GAP = 60              # 엔티티 간 수직 간격
+_ER_MAX_COLS = 4            # 그리드 최대 열 수
+_ER_START_X = 60            # 그리드 시작 x
+_ER_START_Y = 60            # 그리드 시작 y
 
 
 def _new_id() -> str:
@@ -116,23 +132,30 @@ def _parse_sequence(mermaid_code: str) -> tuple[list[dict], list[dict]]:
 
 def _build_sequence_elements(
     participants: list[dict],
-    messages: list[dict],
+    events: list[dict],
 ) -> list[dict]:
-    """시퀀스 다이어그램 Excalidraw 요소를 생성한다.
+    """시퀀스 다이어그램 Excalidraw 요소를 이벤트 스트림으로 생성한다.
+
+    _parse_sequence_events() 반환값을 순회하여 메시지 화살표,
+    제어 프레임(alt/opt/loop 등 점선 사각형+라벨), Note 박스를 렌더한다.
+    무한 캔버스이므로 클램프 없음.
 
     Args:
-        participants: _parse_sequence() 반환값.
-        messages: _parse_sequence() 반환값.
+        participants: _parse_sequence() 반환 참여자 목록.
+        events: _parse_sequence_events() 반환 이벤트 리스트.
 
     Returns:
-        Excalidraw elements 리스트.
+        Excalidraw elements 리스트 (참여자 > 생명선 > 프레임/노트 > 화살표 순).
     """
-    elements: list[dict] = []
+    participant_elements: list[dict] = []
+    lifeline_elements: list[dict] = []
+    frame_elements: list[dict] = []   # 그룹 프레임 + 노트 박스 (화살표 뒤 레이어)
+    arrow_elements: list[dict] = []   # 메시지 화살표 + 라벨
 
     if not participants:
-        return elements
+        return participant_elements
 
-    # 참여자별 x 좌표 계산
+    # 참여자별 x 좌표 및 박스 요소 생성
     participant_x: dict[str, int] = {}
     participant_rect_id: dict[str, str] = {}
 
@@ -146,7 +169,7 @@ def _build_sequence_elements(
         participant_rect_id[p["id"]] = rect_id
 
         # 참여자 박스 (rectangle, roundness type 3)
-        elements.append({
+        participant_elements.append({
             "type": "rectangle",
             "version": 1,
             "versionNonce": random.randint(1, 999999),
@@ -175,7 +198,7 @@ def _build_sequence_elements(
         })
 
         # 참여자 텍스트
-        elements.append({
+        participant_elements.append({
             "type": "text",
             "version": 1,
             "versionNonce": random.randint(1, 999999),
@@ -201,7 +224,7 @@ def _build_sequence_elements(
             "updated": 0,
             "link": None,
             "locked": False,
-            "fontSize": 16,
+            "fontSize": 14,
             "fontFamily": 1,
             "text": p["label"],
             "textAlign": "center",
@@ -212,9 +235,344 @@ def _build_sequence_elements(
             "lineHeight": 1.25,
         })
 
-    # 생명선 (lifeline): 참여자별 수직 점선
+    # 그룹 프레임 x 범위: 모든 참여자를 포함 + padding
+    if participant_x:
+        all_x_min = min(participant_x.values()) - _SEQ_FRAME_PADDING
+        all_x_max = (
+            max(participant_x.values()) + _SEQ_PARTICIPANT_WIDTH + _SEQ_FRAME_PADDING
+        )
+    else:
+        all_x_min = _SEQ_START_X - _SEQ_FRAME_PADDING
+        all_x_max = _SEQ_START_X + _SEQ_PARTICIPANT_WIDTH + _SEQ_FRAME_PADDING
+    frame_w = all_x_max - all_x_min
+
+    # 이벤트 순회 — y 커서 기반 렌더
     lifeline_y_start = _SEQ_START_Y + _SEQ_PARTICIPANT_HEIGHT
-    lifeline_length = len(messages) * _SEQ_MESSAGE_V_SPACING + _SEQ_MESSAGE_V_SPACING
+    y_cursor = lifeline_y_start + _SEQ_MESSAGE_V_SPACING
+
+    # 그룹 스택: [{"type": str, "label": str, "y_top": int, "elses": [int]}]
+    group_stack: list[dict] = []
+
+    for event in events:
+        kind = event["kind"]
+
+        if kind == "msg":
+            src = event["src"]
+            dst = event["dst"]
+            label = event["label"]
+            dashed = event["dashed"]
+
+            if src not in participant_x or dst not in participant_x:
+                y_cursor += _SEQ_MESSAGE_V_SPACING
+                continue
+
+            x1 = participant_x[src] + _SEQ_PARTICIPANT_WIDTH // 2
+            x2 = participant_x[dst] + _SEQ_PARTICIPANT_WIDTH // 2
+            y = y_cursor
+            dx = x2 - x1
+
+            arrow_id = _new_id()
+            arrow_el: dict = {
+                "type": "arrow",
+                "version": 1,
+                "versionNonce": random.randint(1, 999999),
+                "isDeleted": False,
+                "id": arrow_id,
+                "fillStyle": "solid",
+                "strokeWidth": 1,
+                "strokeStyle": "dashed" if dashed else "solid",
+                "roughness": 0,
+                "opacity": 100,
+                "angle": 0,
+                "x": x1,
+                "y": y,
+                "width": abs(dx),
+                "height": 0,
+                "strokeColor": _LINE_COLOR,
+                "backgroundColor": "transparent",
+                "seed": random.randint(1, 999999),
+                "groupIds": [],
+                "frameId": None,
+                "roundness": {"type": 2},
+                "boundElements": [],
+                "updated": 0,
+                "link": None,
+                "locked": False,
+                "points": [[0, 0], [dx, 0]],
+                "lastCommittedPoint": None,
+                "startBinding": {
+                    "elementId": participant_rect_id.get(src, ""),
+                    "focus": 0,
+                    "gap": 8,
+                },
+                "endBinding": {
+                    "elementId": participant_rect_id.get(dst, ""),
+                    "focus": 0,
+                    "gap": 8,
+                },
+                "startArrowhead": None,
+                "endArrowhead": "arrow",
+            }
+
+            if label:
+                label_id = _new_id()
+                arrow_el["boundElements"] = [{"type": "text", "id": label_id}]
+                arrow_elements.append(arrow_el)
+                mid_x = min(x1, x2) + abs(dx) // 2 - 40
+                arrow_elements.append({
+                    "type": "text",
+                    "version": 1,
+                    "versionNonce": random.randint(1, 999999),
+                    "isDeleted": False,
+                    "id": label_id,
+                    "fillStyle": "solid",
+                    "strokeWidth": 1,
+                    "strokeStyle": "solid",
+                    "roughness": 0,
+                    "opacity": 100,
+                    "angle": 0,
+                    "x": mid_x,
+                    "y": y - 18,
+                    "width": 80,
+                    "height": 16,
+                    "strokeColor": _LINE_COLOR,
+                    "backgroundColor": "transparent",
+                    "seed": random.randint(1, 999999),
+                    "groupIds": [],
+                    "frameId": None,
+                    "roundness": None,
+                    "boundElements": [],
+                    "updated": 0,
+                    "link": None,
+                    "locked": False,
+                    "fontSize": 13,
+                    "fontFamily": 1,
+                    "text": label,
+                    "textAlign": "center",
+                    "verticalAlign": "middle",
+                    "containerId": arrow_id,
+                    "originalText": label,
+                    "autoResize": True,
+                    "lineHeight": 1.25,
+                })
+            else:
+                arrow_elements.append(arrow_el)
+
+            y_cursor += _SEQ_MESSAGE_V_SPACING
+
+        elif kind == "note":
+            actors = event["actors"]
+            text = event["text"]
+
+            xs = [participant_x[a] for a in actors if a in participant_x]
+            if not xs:
+                continue
+
+            note_x = min(xs)
+            note_w = max(xs) - note_x + _SEQ_PARTICIPANT_WIDTH
+            note_rect_id = _new_id()
+            note_text_id = _new_id()
+
+            frame_elements.append({
+                "type": "rectangle",
+                "version": 1,
+                "versionNonce": random.randint(1, 999999),
+                "isDeleted": False,
+                "id": note_rect_id,
+                "fillStyle": "solid",
+                "strokeWidth": 1,
+                "strokeStyle": "solid",
+                "roughness": 0,
+                "opacity": 100,
+                "angle": 0,
+                "x": note_x,
+                "y": y_cursor,
+                "width": note_w,
+                "height": _SEQ_NOTE_HEIGHT,
+                "strokeColor": "#ca8a04",
+                "backgroundColor": "#fefce8",
+                "seed": random.randint(1, 999999),
+                "groupIds": [],
+                "frameId": None,
+                "roundness": {"type": 1},
+                "boundElements": [{"type": "text", "id": note_text_id}],
+                "updated": 0,
+                "link": None,
+                "locked": False,
+            })
+            frame_elements.append({
+                "type": "text",
+                "version": 1,
+                "versionNonce": random.randint(1, 999999),
+                "isDeleted": False,
+                "id": note_text_id,
+                "fillStyle": "solid",
+                "strokeWidth": 1,
+                "strokeStyle": "solid",
+                "roughness": 0,
+                "opacity": 100,
+                "angle": 0,
+                "x": note_x,
+                "y": y_cursor + (_SEQ_NOTE_HEIGHT - 20) // 2,
+                "width": note_w,
+                "height": 20,
+                "strokeColor": "#92400e",
+                "backgroundColor": "transparent",
+                "seed": random.randint(1, 999999),
+                "groupIds": [],
+                "frameId": None,
+                "roundness": None,
+                "boundElements": [],
+                "updated": 0,
+                "link": None,
+                "locked": False,
+                "fontSize": 12,
+                "fontFamily": 1,
+                "text": text,
+                "textAlign": "center",
+                "verticalAlign": "middle",
+                "containerId": note_rect_id,
+                "originalText": text,
+                "autoResize": True,
+                "lineHeight": 1.25,
+            })
+
+            y_cursor += _SEQ_NOTE_HEIGHT + _SEQ_NOTE_PADDING
+
+        elif kind == "group_start":
+            group_stack.append({
+                "type": event["type"],
+                "label": event["label"],
+                "y_top": y_cursor,
+                "elses": [],
+            })
+
+        elif kind == "group_else":
+            if group_stack:
+                group_stack[-1]["elses"].append(y_cursor)
+
+        elif kind == "group_end":
+            if not group_stack:
+                continue
+            group = group_stack.pop()
+            y_top = group["y_top"]
+            y_bottom = y_cursor
+            if y_bottom <= y_top:
+                continue
+
+            frame_label = group["type"]
+            if group["label"]:
+                frame_label += f" {group['label']}"
+
+            frame_h = y_bottom - y_top
+            frame_rect_id = _new_id()
+            frame_text_id = _new_id()
+
+            # 그룹 프레임 사각형 (점선, 반투명)
+            frame_elements.append({
+                "type": "rectangle",
+                "version": 1,
+                "versionNonce": random.randint(1, 999999),
+                "isDeleted": False,
+                "id": frame_rect_id,
+                "fillStyle": "solid",
+                "strokeWidth": 1,
+                "strokeStyle": "dashed",
+                "roughness": 0,
+                "opacity": 25,
+                "angle": 0,
+                "x": all_x_min,
+                "y": y_top,
+                "width": frame_w,
+                "height": frame_h,
+                "strokeColor": "#3b82f6",
+                "backgroundColor": "#dbeafe",
+                "seed": random.randint(1, 999999),
+                "groupIds": [],
+                "frameId": None,
+                "roundness": {"type": 1},
+                "boundElements": [],
+                "updated": 0,
+                "link": None,
+                "locked": False,
+            })
+            # 프레임 라벨 텍스트 (완전 불투명, 좌상단)
+            frame_elements.append({
+                "type": "text",
+                "version": 1,
+                "versionNonce": random.randint(1, 999999),
+                "isDeleted": False,
+                "id": frame_text_id,
+                "fillStyle": "solid",
+                "strokeWidth": 1,
+                "strokeStyle": "solid",
+                "roughness": 0,
+                "opacity": 100,
+                "angle": 0,
+                "x": all_x_min + 4,
+                "y": y_top + 2,
+                "width": 240,
+                "height": 20,
+                "strokeColor": "#1d4ed8",
+                "backgroundColor": "transparent",
+                "seed": random.randint(1, 999999),
+                "groupIds": [],
+                "frameId": None,
+                "roundness": None,
+                "boundElements": [],
+                "updated": 0,
+                "link": None,
+                "locked": False,
+                "fontSize": 12,
+                "fontFamily": 1,
+                "text": frame_label,
+                "textAlign": "left",
+                "verticalAlign": "top",
+                "containerId": None,
+                "originalText": frame_label,
+                "autoResize": True,
+                "lineHeight": 1.25,
+            })
+
+            # else 구분선 (수평 점선)
+            for else_y in group["elses"]:
+                else_line_id = _new_id()
+                frame_elements.append({
+                    "type": "line",
+                    "version": 1,
+                    "versionNonce": random.randint(1, 999999),
+                    "isDeleted": False,
+                    "id": else_line_id,
+                    "fillStyle": "solid",
+                    "strokeWidth": 1,
+                    "strokeStyle": "dashed",
+                    "roughness": 0,
+                    "opacity": 80,
+                    "angle": 0,
+                    "x": all_x_min,
+                    "y": else_y,
+                    "width": frame_w,
+                    "height": 0,
+                    "strokeColor": "#3b82f6",
+                    "backgroundColor": "transparent",
+                    "seed": random.randint(1, 999999),
+                    "groupIds": [],
+                    "frameId": None,
+                    "roundness": None,
+                    "boundElements": [],
+                    "updated": 0,
+                    "link": None,
+                    "locked": False,
+                    "points": [[0, 0], [frame_w, 0]],
+                    "lastCommittedPoint": None,
+                    "startBinding": None,
+                    "endBinding": None,
+                    "startArrowhead": None,
+                    "endArrowhead": None,
+                })
+
+    # 생명선 (최종 y 기준으로 높이 결정)
+    total_lifeline_h = y_cursor + _SEQ_MESSAGE_V_SPACING - lifeline_y_start
 
     for p in participants:
         pid = p["id"]
@@ -224,7 +582,7 @@ def _build_sequence_elements(
         color = _NODE_COLORS[participants.index(p) % len(_NODE_COLORS)]
         lifeline_id = _new_id()
 
-        elements.append({
+        lifeline_elements.append({
             "type": "arrow",
             "version": 1,
             "versionNonce": random.randint(1, 999999),
@@ -239,7 +597,7 @@ def _build_sequence_elements(
             "x": cx,
             "y": lifeline_y_start,
             "width": 0,
-            "height": lifeline_length,
+            "height": total_lifeline_h,
             "strokeColor": color["stroke"],
             "backgroundColor": "transparent",
             "seed": random.randint(1, 999999),
@@ -250,7 +608,7 @@ def _build_sequence_elements(
             "updated": 0,
             "link": None,
             "locked": False,
-            "points": [[0, 0], [0, lifeline_length]],
+            "points": [[0, 0], [0, total_lifeline_h]],
             "lastCommittedPoint": None,
             "startBinding": None,
             "endBinding": None,
@@ -258,112 +616,216 @@ def _build_sequence_elements(
             "endArrowhead": None,
         })
 
-    # 메시지 화살표
-    msg_y_base = lifeline_y_start + _SEQ_MESSAGE_V_SPACING
+    # 하단 참여자 박스 반복 (생명선 끝, mermaid 스타일)
+    bottom_elements: list[dict] = []
+    bottom_y = lifeline_y_start + total_lifeline_h
+    for i, p in enumerate(participants):
+        pid = p["id"]
+        if pid not in participant_x:
+            continue
+        x = participant_x[pid]
+        color = _NODE_COLORS[i % len(_NODE_COLORS)]
+        rect_id = _new_id()
+        text_id = _new_id()
+        bottom_elements.append({
+            "type": "rectangle", "version": 1,
+            "versionNonce": random.randint(1, 999999), "isDeleted": False,
+            "id": rect_id, "fillStyle": "solid", "strokeWidth": 1,
+            "strokeStyle": "solid", "roughness": 0, "opacity": 100, "angle": 0,
+            "x": x, "y": bottom_y,
+            "width": _SEQ_PARTICIPANT_WIDTH, "height": _SEQ_PARTICIPANT_HEIGHT,
+            "strokeColor": color["stroke"], "backgroundColor": color["fill"],
+            "seed": random.randint(1, 999999), "groupIds": [], "frameId": None,
+            "roundness": {"type": 3},
+            "boundElements": [{"type": "text", "id": text_id}],
+            "updated": 0, "link": None, "locked": False,
+        })
+        bottom_elements.append({
+            "type": "text", "version": 1,
+            "versionNonce": random.randint(1, 999999), "isDeleted": False,
+            "id": text_id, "fillStyle": "solid", "strokeWidth": 1,
+            "strokeStyle": "solid", "roughness": 0, "opacity": 100, "angle": 0,
+            "x": x, "y": bottom_y + (_SEQ_PARTICIPANT_HEIGHT - 20) // 2,
+            "width": _SEQ_PARTICIPANT_WIDTH, "height": 20,
+            "strokeColor": "#1e293b", "backgroundColor": "transparent",
+            "seed": random.randint(1, 999999), "groupIds": [], "frameId": None,
+            "roundness": None, "boundElements": [], "updated": 0,
+            "link": None, "locked": False,
+            "fontSize": 14, "fontFamily": 1, "text": p["label"],
+            "textAlign": "center", "verticalAlign": "middle",
+            "containerId": rect_id, "originalText": p["label"],
+            "autoResize": True, "lineHeight": 1.25,
+        })
 
-    for i, msg in enumerate(messages):
-        src = msg["source"]
-        dst = msg["target"]
-        label = msg["label"]
-        style = msg["style"]
+    # 요소 순서: 참여자 > 생명선 > 하단박스 > 프레임/노트 > 화살표 (z-order)
+    return (participant_elements + lifeline_elements + bottom_elements
+            + frame_elements + arrow_elements)
 
-        if src not in participant_x or dst not in participant_x:
+
+def _build_er_elements(
+    entities: list[str],
+    relations: list[tuple[str, str, str]],
+    entity_attrs: dict[str, list[tuple[str, str]]],
+) -> list[dict]:
+    """erDiagram Excalidraw 요소를 생성한다.
+
+    각 엔티티 = 사각형 + 멀티라인 텍스트(1행=엔티티명, 이후=type name).
+    노드 높이는 속성 수에 비례. 관계 = 카디널리티 라벨 화살표 엣지.
+
+    Args:
+        entities: _parse_er() 반환 엔티티명 목록.
+        relations: _parse_er() 반환 (src, dst, label) 튜플 목록.
+        entity_attrs: _parse_er_attrs() 반환 {name: [(type, name), ...]} 딕셔너리.
+
+    Returns:
+        Excalidraw elements 리스트.
+    """
+    elements: list[dict] = []
+    node_rect_ids: dict[str, str] = {}
+    entity_positions: dict[str, tuple[int, int]] = {}
+    entity_heights: dict[str, int] = {}
+
+    if not entities:
+        return elements
+
+    # 엔티티 높이 계산 (헤더 + 속성 행)
+    for ent in entities:
+        attrs = entity_attrs.get(ent, [])
+        entity_heights[ent] = _ER_HEADER_HEIGHT + len(attrs) * _ER_ROW_HEIGHT
+
+    # 그리드 레이아웃 (최대 _ER_MAX_COLS 열, 행별 가변 높이)
+    n = len(entities)
+    n_cols = min(n, _ER_MAX_COLS)
+    n_rows = (n + n_cols - 1) // n_cols
+
+    # 행별 최대 높이 계산
+    row_max_h: dict[int, int] = {}
+    for i, ent in enumerate(entities):
+        row = i // n_cols
+        row_max_h[row] = max(row_max_h.get(row, 0), entity_heights[ent])
+
+    # 행별 y 시작점 계산
+    row_y: dict[int, int] = {}
+    y_acc = _ER_START_Y
+    for row in range(n_rows):
+        row_y[row] = y_acc
+        y_acc += row_max_h.get(row, _ER_HEADER_HEIGHT) + _ER_V_GAP
+
+    # 엔티티별 위치 결정
+    for i, ent in enumerate(entities):
+        row = i // n_cols
+        col = i % n_cols
+        x = _ER_START_X + col * (_ER_ENTITY_WIDTH + _ER_H_GAP)
+        y = row_y[row]
+        entity_positions[ent] = (x, y)
+
+    # 엔티티 렌더 (사각형 + 멀티라인 텍스트)
+    for color_idx, ent in enumerate(entities):
+        if ent not in entity_positions:
             continue
 
-        x1 = participant_x[src] + _SEQ_PARTICIPANT_WIDTH // 2
-        x2 = participant_x[dst] + _SEQ_PARTICIPANT_WIDTH // 2
-        y = msg_y_base + i * _SEQ_MESSAGE_V_SPACING
+        x, y = entity_positions[ent]
+        h = entity_heights[ent]
+        attrs = entity_attrs.get(ent, [])
+        color = _NODE_COLORS[color_idx % len(_NODE_COLORS)]
 
-        arrow_id = _new_id()
-        dx = x2 - x1
+        rect_id = _new_id()
+        text_id = _new_id()
+        node_rect_ids[ent] = rect_id
 
-        arrow_el: dict = {
-            "type": "arrow",
-            "version": 1,
-            "versionNonce": random.randint(1, 999999),
-            "isDeleted": False,
-            "id": arrow_id,
-            "fillStyle": "solid",
-            "strokeWidth": 1,
-            "strokeStyle": style,
-            "roughness": 0,
-            "opacity": 100,
-            "angle": 0,
-            "x": x1,
-            "y": y,
-            "width": abs(dx),
-            "height": 0,
-            "strokeColor": _LINE_COLOR,
-            "backgroundColor": "transparent",
-            "seed": random.randint(1, 999999),
-            "groupIds": [],
-            "frameId": None,
-            "roundness": {"type": 2},
-            "boundElements": [],
-            "updated": 0,
-            "link": None,
-            "locked": False,
-            "points": [[0, 0], [dx, 0]],
-            "lastCommittedPoint": None,
-            "startBinding": {
-                "elementId": participant_rect_id[src],
-                "focus": 0,
-                "gap": 8,
-            },
-            "endBinding": {
-                "elementId": participant_rect_id[dst],
-                "focus": 0,
-                "gap": 8,
-            },
-            "startArrowhead": None,
-            "endArrowhead": "arrow",
-        }
+        col_split = int(_ER_ENTITY_WIDTH * 0.42)
+        line_color = "#cbd5e1"
 
-        if label:
-            label_id = _new_id()
-            arrow_el["boundElements"] = [{"type": "text", "id": label_id}]
-            elements.append(arrow_el)
-
-            # 라벨 화살표 위에 배치
-            mid_x = min(x1, x2) + abs(dx) // 2 - 40
-            elements.append({
-                "type": "text",
-                "version": 1,
-                "versionNonce": random.randint(1, 999999),
-                "isDeleted": False,
-                "id": label_id,
-                "fillStyle": "solid",
-                "strokeWidth": 1,
-                "strokeStyle": "solid",
-                "roughness": 0,
-                "opacity": 100,
-                "angle": 0,
-                "x": mid_x,
-                "y": y - 18,
-                "width": 80,
-                "height": 16,
-                "strokeColor": _LINE_COLOR,
+        def _el(**kw):
+            base = {
+                "version": 1, "versionNonce": random.randint(1, 999999),
+                "isDeleted": False, "fillStyle": "solid", "strokeWidth": 1,
+                "strokeStyle": "solid", "roughness": 0, "opacity": 100, "angle": 0,
                 "backgroundColor": "transparent",
-                "seed": random.randint(1, 999999),
-                "groupIds": [],
-                "frameId": None,
-                "roundness": None,
-                "boundElements": [],
-                "updated": 0,
-                "link": None,
-                "locked": False,
-                "fontSize": 13,
-                "fontFamily": 1,
-                "text": label,
-                "textAlign": "center",
-                "verticalAlign": "middle",
-                "containerId": arrow_id,
-                "originalText": label,
-                "autoResize": True,
-                "lineHeight": 1.25,
-            })
-        else:
-            elements.append(arrow_el)
+                "seed": random.randint(1, 999999), "groupIds": [], "frameId": None,
+                "roundness": None, "boundElements": [], "updated": 0,
+                "link": None, "locked": False,
+            }
+            base.update(kw)
+            return base
+
+        def _hline(lx, ly, lw):
+            return _el(type="line", id=_new_id(), x=lx, y=ly, width=lw, height=0,
+                       strokeColor=line_color, points=[[0, 0], [lw, 0]],
+                       lastCommittedPoint=None, startBinding=None, endBinding=None,
+                       startArrowhead=None, endArrowhead=None)
+
+        def _cell_text(t, cx, cy, cw, cc):
+            return _el(type="text", id=_new_id(), x=cx, y=cy, width=cw, height=14,
+                       strokeColor=cc, fontSize=11, fontFamily=1, text=t,
+                       textAlign="left", verticalAlign="middle", containerId=None,
+                       originalText=t, autoResize=False, lineHeight=1.25)
+
+        # 외곽 박스 (흰 배경 + 엔티티 stroke)
+        elements.append(_el(
+            type="rectangle", id=rect_id, x=x, y=y,
+            width=_ER_ENTITY_WIDTH, height=h,
+            strokeColor=color["stroke"], backgroundColor="#ffffff",
+            roundness={"type": 1},
+        ))
+
+        # 헤더 밴드 (엔티티명) — 팔레트 fill
+        hdr_id = _new_id()
+        hdr_txt_id = _new_id()
+        elements.append(_el(
+            type="rectangle", id=hdr_id, x=x, y=y,
+            width=_ER_ENTITY_WIDTH, height=_ER_HEADER_HEIGHT,
+            strokeColor=color["stroke"], backgroundColor=color["fill"],
+            boundElements=[{"type": "text", "id": hdr_txt_id}],
+        ))
+        elements.append(_el(
+            type="text", id=hdr_txt_id, x=x, y=y + (_ER_HEADER_HEIGHT - 16) // 2,
+            width=_ER_ENTITY_WIDTH, height=16, strokeColor="#1e293b",
+            fontSize=13, fontFamily=1, text=ent, textAlign="center",
+            verticalAlign="middle", containerId=hdr_id, originalText=ent,
+            autoResize=False, lineHeight=1.25,
+        ))
+
+        # 컬럼/행 구분선 + type|name 셀 텍스트
+        if attrs:
+            elements.append(_el(
+                type="line", id=_new_id(), x=x + col_split, y=y + _ER_HEADER_HEIGHT,
+                width=0, height=h - _ER_HEADER_HEIGHT, strokeColor=line_color,
+                points=[[0, 0], [0, h - _ER_HEADER_HEIGHT]], lastCommittedPoint=None,
+                startBinding=None, endBinding=None, startArrowhead=None, endArrowhead=None,
+            ))
+            for k, (typ, nm) in enumerate(attrs):
+                ry = y + _ER_HEADER_HEIGHT + k * _ER_ROW_HEIGHT
+                if k > 0:
+                    elements.append(_hline(x, ry, _ER_ENTITY_WIDTH))
+                cy = ry + (_ER_ROW_HEIGHT - 14) // 2
+                elements.append(_cell_text(typ, x + 6, cy, col_split - 8, "#475569"))
+                elements.append(_cell_text(nm, x + col_split + 6, cy,
+                                           _ER_ENTITY_WIDTH - col_split - 10, "#1e293b"))
+
+    # 관계 화살표 렌더
+    for src, dst, label in relations:
+        if src not in node_rect_ids or dst not in node_rect_ids:
+            continue
+        if src not in entity_positions or dst not in entity_positions:
+            continue
+
+        src_x, src_y = entity_positions[src]
+        dst_x, dst_y = entity_positions[dst]
+
+        x1 = src_x + _ER_ENTITY_WIDTH // 2
+        y1 = src_y + entity_heights[src] // 2
+        x2 = dst_x + _ER_ENTITY_WIDTH // 2
+        y2 = dst_y + entity_heights[dst] // 2
+
+        arrow_els = _make_arrow(
+            _new_id(),
+            x1, y1, x2, y2,
+            start_id=node_rect_ids[src],
+            end_id=node_rect_ids[dst],
+            label=label,
+        )
+        elements.extend(arrow_els)
 
     return elements
 
@@ -493,12 +955,12 @@ def _parse_mermaid(mermaid_code: str) -> tuple[dict, list, dict]:
                 dst_id, dst_label = _extract_node_id_label(dst_raw)
 
                 if src_id:
-                    nodes.setdefault(src_id, src_label or src_id)
+                    nodes.setdefault(src_id, (src_label or src_id).replace('<br/>', '\n').replace('<br>', '\n'))
                     if current_subgraph and src_id not in subgraphs[current_subgraph]["nodes"]:
                         subgraphs[current_subgraph]["nodes"].append(src_id)
 
                 if dst_id:
-                    nodes.setdefault(dst_id, dst_label or dst_id)
+                    nodes.setdefault(dst_id, (dst_label or dst_id).replace('<br/>', '\n').replace('<br>', '\n'))
                     if current_subgraph and dst_id not in subgraphs[current_subgraph]["nodes"]:
                         subgraphs[current_subgraph]["nodes"].append(dst_id)
 
@@ -517,7 +979,7 @@ def _parse_mermaid(mermaid_code: str) -> tuple[dict, list, dict]:
             if m:
                 nid = m.group(1).strip()
                 label = m.group(2).strip()
-                nodes[nid] = label
+                nodes[nid] = label.replace('<br/>', '\n').replace('<br>', '\n')
                 if current_subgraph and nid not in subgraphs[current_subgraph]["nodes"]:
                     subgraphs[current_subgraph]["nodes"].append(nid)
                 break
@@ -797,6 +1259,9 @@ def _make_text(
     font_size: int = 16,
 ) -> dict:
     """Excalidraw text 요소를 생성한다."""
+    est_w, _ = estimate_text_size_px(text, font_size_px=font_size)
+    if est_w > _NODE_WIDTH:
+        font_size = max(11, int(font_size * _NODE_WIDTH / est_w))
     return {
         "type": "text",
         "version": 1,
@@ -962,11 +1427,20 @@ def mermaid_to_excalidraw(mermaid_code: str, title: str = "") -> dict:
     Raises:
         ValueError: 파싱 결과 노드/참여자가 없는 경우.
     """
-    # 시퀀스 다이어그램 감지
-    first_line = mermaid_code.strip().split('\n')[0].strip().lower()
-    if 'sequencediagram' in first_line.replace(' ', ''):
-        participants, messages = _parse_sequence(mermaid_code)
-        elements = _build_sequence_elements(participants, messages)
+    # 타입 판별: %% 주석·빈 줄을 건너뛴 첫 의미 있는 줄 기준
+    from converters.drawio import (
+        _first_meaningful_line,
+        _parse_er,
+        _parse_er_attrs,
+        _parse_sequence_events,
+    )
+    first_line = _first_meaningful_line(mermaid_code)
+
+    # 시퀀스 다이어그램: 이벤트 스트림으로 제어 프레임·Note 포함 렌더
+    if 'sequencediagram' in first_line.lower().replace(' ', ''):
+        participants, _ = _parse_sequence(mermaid_code)
+        events = _parse_sequence_events(mermaid_code)
+        elements = _build_sequence_elements(participants, events)
         return {
             "type": "excalidraw",
             "version": 2,
@@ -979,6 +1453,24 @@ def mermaid_to_excalidraw(mermaid_code: str, title: str = "") -> dict:
             "files": {},
         }
 
+    # erDiagram: 엔티티 = 속성 포함 멀티라인 테이블, 관계 = 카디널리티 엣지
+    if first_line.startswith('erDiagram'):
+        entities, relations = _parse_er(mermaid_code)
+        entity_attrs = _parse_er_attrs(mermaid_code)
+        elements = _build_er_elements(entities, relations, entity_attrs)
+        return {
+            "type": "excalidraw",
+            "version": 2,
+            "source": "mermaid-web-converter",
+            "elements": elements,
+            "appState": {
+                "viewBackgroundColor": "#ffffff",
+                "gridSize": 20,
+            },
+            "files": {},
+        }
+
+    # flowchart/graph 분기 (시퀀스·erDiagram 분기가 위에서 return했으므로 여기까지 오면 flowchart)
     nodes, edges, subgraphs = _parse_mermaid(mermaid_code)
     direction = _parse_direction(mermaid_code)
 

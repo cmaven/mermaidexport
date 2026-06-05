@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from parser import parse_mermaid_blocks
-from converters.png import mermaid_to_png
+from converters.png import mermaid_to_png, mermaid_to_svg
 from converters.drawio import mermaid_to_drawio
 from converters.excalidraw import mermaid_to_excalidraw
 from converters.pptx_shapes import mermaid_to_pptx
@@ -49,6 +49,7 @@ FORMAT_EXT: dict[str, str] = {
     "excalidraw": "excalidraw",
     "pptx": "pptx",
     "combined-pptx": "pptx",
+    "svg": "svg",
 }
 
 # 포맷 → Content-Type 매핑
@@ -58,6 +59,7 @@ FORMAT_CONTENT_TYPE: dict[str, str] = {
     "excalidraw": "application/json",
     "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     "combined-pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "svg": "image/svg+xml",
 }
 
 # ---------------------------------------------------------------------------
@@ -154,6 +156,16 @@ async def convert(file: UploadFile = File(...)) -> JSONResponse:
             formats["pptx"] = None
             errors["pptx"] = str(exc)
 
+        # SVG 변환
+        try:
+            svg_bytes = mermaid_to_svg(mermaid_code)
+            out_path = job_dir / f"diagram_{i}.svg"
+            out_path.write_bytes(svg_bytes)
+            formats["svg"] = f"/api/download/{job_id}/{i}/svg"
+        except Exception as exc:
+            formats["svg"] = None
+            errors["svg"] = str(exc)
+
         # 미리보기는 PNG 우선; PNG가 없으면 null
         preview = formats.get("png")
 
@@ -162,6 +174,7 @@ async def convert(file: UploadFile = File(...)) -> JSONResponse:
             "title": title,
             "formats": formats,
             "preview": preview,
+            "mermaid_code": mermaid_code,
         }
         if errors:
             diagram_entry["errors"] = errors

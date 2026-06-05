@@ -1,42 +1,43 @@
 # ============================================================
-# palette.py: 모든 변환기가 공유하는 통합 색상 팔레트 (SaaS 마케팅 스타일)
+# palette.py: 모든 변환기가 공유하는 통합 색상 팔레트 (draw.io 예제 톤)
 # 상세: PNG, PPTX, draw.io, Excalidraw 모두 동일한 색상 사용.
-#       Scaleway / Vercel / Render 제품 페이지 톤 — 보라 primary,
-#       핑크(managed) / 파랑(workload) fill, 1px stroke, 그림자/그라데이션 없음.
-# 생성일: 2026-04-07 | 수정일: 2026-05-11
+#       draw.io(svg)example.png 에서 추출한 의미별 다색(semantic) 팔레트 —
+#       파랑/빨강/금색/초록/보라/주황/분홍 + 크림색 컨테이너, 슬레이트 엣지.
+# 생성일: 2026-04-07 | 수정일: 2026-06-05
 # ============================================================
 
 # 노드 색상 팔레트: (fill_hex, stroke_hex)
-# SaaS 스타일: 파랑/핑크/보라 3톤을 메인으로, 부드러운 보조 톤으로 다양성 확보
+# draw.io 예제 톤: 밝은 파스텔 fill + 진한 동일 계열 stroke (인덱스 순환 적용)
 NODE_COLORS = [
-    ("#DBEAFE", "#6B46FF"),   # blue fill   + primary purple stroke (workload)
-    ("#FCE7F3", "#6B46FF"),   # pink fill   + primary purple stroke (managed)
-    ("#EDE9FE", "#6B46FF"),   # violet fill + primary purple stroke
-    ("#E0F2FE", "#0369A1"),   # sky fill    + sky stroke
-    ("#FCE7F3", "#BE185D"),   # pink fill   + magenta stroke
-    ("#DBEAFE", "#1E40AF"),   # blue fill   + navy stroke
-    ("#F5F3FF", "#6B46FF"),   # light violet
-    ("#FFE4E6", "#BE185D"),   # rose fill   + magenta stroke
+    ("#D8E8F8", "#0080C0"),   # blue   — 사용자/프론트엔드 톤
+    ("#F8E0E0", "#D82020"),   # red    — GPU/LLM 톤
+    ("#F8F0C0", "#C88800"),   # gold   — 저장소 톤
+    ("#D8F8E0", "#10A048"),   # green  — 챗봇/서비스 톤
+    ("#E8E8F8", "#7838E8"),   # violet — 모니터링 톤
+    ("#F8E8D0", "#E06000"),   # orange — LiteLLM/공유 톤
+    ("#F8E0F0", "#D82070"),   # pink   — 임베딩 톤
+    ("#EDEFF2", "#586878"),   # slate  — 여유/중립 톤
 ]
 
-# 서브그래프 색상: (fill_hex, stroke_hex) — 클러스터 컨테이너 (대시 보라 테두리 톤)
+# 서브그래프 색상: (fill_hex, stroke_hex) — 클러스터 컨테이너
+# draw.io 예제: 크림색 배경 + 금색 점선 테두리를 메인으로, 옅은 톤들로 다양성
 SUBGRAPH_COLORS = [
-    ("#F5F3FF", "#6B46FF"),   # violet tint — primary cluster (k8s 등)
-    ("#FCE7F3", "#6B46FF"),   # pink tint   — managed plane (capsule, operator)
-    ("#EFF6FF", "#6B46FF"),   # blue tint   — workload group
-    ("#FAF5FF", "#7C3AED"),   # very-light violet
-    ("#FDF2F8", "#BE185D"),   # very-light pink
-    ("#F0F9FF", "#0369A1"),   # very-light sky
+    ("#FAF8E6", "#C88800"),   # cream — 저장소/메인 컨테이너 (금색 점선)
+    ("#FBEAEA", "#D82020"),   # pale red
+    ("#E6F1FB", "#0080C0"),   # pale blue
+    ("#E7F8EC", "#10A048"),   # pale green
+    ("#EEEBFB", "#7838E8"),   # pale violet
+    ("#FBF0E2", "#E06000"),   # pale orange
 ]
 
-# 텍스트/라인 공통 색상 (노트 §부록 기준)
-TEXT_COLOR = "#1E293B"          # 본문 텍스트 (slate-900)
-LINE_COLOR = "#475569"          # 엣지/legend (slate-600)
+# 텍스트/라인 공통 색상 (draw.io 예제 추출)
+TEXT_COLOR = "#1E293B"          # 본문 텍스트 (진한 슬레이트)
+LINE_COLOR = "#405068"          # 엣지/legend (예제 엣지 슬레이트)
 EDGE_LABEL_BG = "#FFFFFF"
-SUBGRAPH_BORDER_FALLBACK = "#6B46FF"
+SUBGRAPH_BORDER_FALLBACK = "#C88800"   # 금색 (예제 컨테이너 테두리)
 
 # 브랜드 액센트 (PPTX 상단 구분선 등에 활용 가능)
-PRIMARY_ACCENT = "#6B46FF"      # SaaS primary purple
+PRIMARY_ACCENT = "#7838E8"      # 예제 모니터링 보라
 
 
 def get_node_color(index: int) -> tuple[str, str]:
