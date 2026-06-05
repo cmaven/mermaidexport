@@ -207,8 +207,16 @@ def _shape_from_tokens(open_tok: str, close_tok: str) -> str:
 
 
 def _clean_label(raw: str) -> str:
-    """HTML 태그 및 따옴표를 제거하여 순수 텍스트를 반환한다."""
-    text = re.sub(r"<[^>]+>", "", raw or "")
+    """HTML 태그·엔티티를 정리해 순수 텍스트를 반환한다.
+
+    - <br/> → 공백(구분 유지)
+    - 나머지 태그 제거
+    - &lt; &gt; &amp; 등 HTML 엔티티 디코드(예: &lt;vendor&gt; → <vendor>)
+    """
+    import html as _html
+    text = re.sub(r"<br\s*/?>", " ", raw or "", flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = _html.unescape(text)
     text = text.strip('"').strip("'").strip()
     return text
 
@@ -463,7 +471,8 @@ def _scale_to_fit(
     scale_x = avail_w / (max_x - content_x) if max_x > bound_r else 1.0
     scale_y = avail_h / (max_y - content_y) if max_y > bound_b else 1.0
     scale = min(scale_x, scale_y)
-    scale = max(scale, 0.4)  # 최소 40% — 가독성 보장
+    # 잘림 방지를 위해 항상 슬라이드 안에 들어오도록 축소(넓은 그래프는 작아도 완전 표시).
+    scale = max(scale, 0.12)
 
     for node in diagram.nodes.values():
         node.x = content_x + (node.x - content_x) * scale
@@ -476,6 +485,52 @@ def _scale_to_fit(
         sg.y = content_y + (sg.y - content_y) * scale
         sg.w *= scale
         sg.h *= scale
+
+
+def apply_graphviz_layout(diagram: ParsedDiagram) -> bool:
+    """graphviz 레이아웃을 계산해 노드/서브그래프 좌표(inch)에 주입한다.
+
+    박스 겹침·엣지 교차를 줄인다. dot 미설치·실패 시 False 반환 → grid 폴백.
+    """
+    try:
+        from converters.layout_graph import (
+            compute_graphviz_layout, LNode, LEdge, LCluster)
+    except Exception:
+        return False
+    if not diagram.nodes:
+        return False
+
+    l_nodes = [LNode(n.id, n.label, n.shape) for n in diagram.nodes.values()]
+    l_edges = [LEdge(e.source, e.target, e.label) for e in diagram.edges]
+    l_clusters = [LCluster(sg.id, sg.label, list(sg.node_ids))
+                  for sg in diagram.subgraphs.values()]
+    layout = compute_graphviz_layout(l_nodes, l_edges, l_clusters, diagram.direction)
+    if layout is None or not layout.nodes:
+        return False
+
+    content_x = MARGIN
+    content_y = TITLE_H + MARGIN
+    PX2IN = 1.0 / 96.0
+    for nid, node in diagram.nodes.items():
+        box = layout.nodes.get(nid)
+        if box is None:
+            return False
+        node.x = content_x + box.x * PX2IN
+        node.y = content_y + box.y * PX2IN
+        node.w = box.w * PX2IN
+        node.h = box.h * PX2IN
+    for sid, sg in diagram.subgraphs.items():
+        box = layout.clusters.get(sid)
+        if box is None:
+            continue
+        sg.x = content_x + box.x * PX2IN
+        sg.y = content_y + box.y * PX2IN
+        sg.w = box.w * PX2IN
+        sg.h = box.h * PX2IN
+
+    _scale_to_fit(diagram, content_x, content_y,
+                  SLIDE_W - 2 * MARGIN, SLIDE_H - TITLE_H - 2 * MARGIN)
+    return True
 
 
 # ──────────────────────────────────────────────
@@ -499,19 +554,29 @@ def _set_text(shape, text: str, font_size: int = 9, bold: bool = False,
 
     텍스트 길이 대비 도형 폭이 좁으면 폰트를 자동 축소한다 (최소 7pt).
     """
-    # 텍스트 길이 기반 폰트 자동 축소
-    visual_chars = len(text)
-    shape_w_inches = shape.width / 914400  # EMU → inches
-    ratio = (shape_w_inches * 96) / max(1, visual_chars * font_size * 0.55)
-    effective_size = max(7, int(font_size * min(1.0, ratio)))
+    # 폭·높이 모두에 맞게 폰트 자동 축소 (멀티라인 세로 넘침 방지)
+    # 한글(전각)·영문 폭 차이를 반영해 시각폭(em) 기준으로 계산.
+    import math
+    from converters.text_metrics import _visual_width
+    text_em = max(0.5, _visual_width(text.replace("\n", " ")))  # 1줄 전체 시각폭(em)
+    avail_w_px = max(8.0, (shape.width / 914400) * 96 - 8)   # 좌우 마진 제외
+    avail_h_px = max(8.0, (shape.height / 914400) * 96 - 6)  # 상하 마진 제외
+    effective_size = 5
+    for f in range(int(font_size), 4, -1):
+        px = f * 1.333                       # pt → px
+        full_w = text_em * px                # 1줄로 폈을 때 폭(px)
+        lines = max(1, math.ceil(full_w / avail_w_px))   # 줄바꿈 후 줄 수
+        if lines * px * 1.4 <= avail_h_px:   # 줄 수 × 줄높이 ≤ 박스 높이
+            effective_size = f
+            break
 
     tf = shape.text_frame
     tf.word_wrap = True
-    tf.auto_size = None
-    tf.margin_top = Pt(2)
-    tf.margin_bottom = Pt(2)
-    tf.margin_left = Pt(4)
-    tf.margin_right = Pt(4)
+    tf.auto_size = None  # 폰트 크기 계산으로 박스 내 맞춤(렌더러 독립)
+    tf.margin_top = Pt(1)
+    tf.margin_bottom = Pt(1)
+    tf.margin_left = Pt(3)
+    tf.margin_right = Pt(3)
 
     # 기존 단락 초기화
     tf.clear()
@@ -1399,45 +1464,68 @@ def _render_er_diagram(mermaid_code: str, title: str = "") -> bytes:
     TBL_H_GAP = 0.30
 
     n = len(entities)
-    # 열 수: 슬라이드 너비에 맞춰 자동 결정
-    cols = max(1, min(n, int((avail_w + TBL_W_GAP) / (TBL_W_BASE + TBL_W_GAP))))
-    rows_count = (n + cols - 1) // cols
-
-    # 각 엔티티 높이 계산
     entity_heights = {
         ent: HEADER_H + len(attrs_map.get(ent, [])) * ROW_H
         for ent in entities
     }
 
-    # 그리드 행별 최대 높이
-    grid_row_h = []
-    for r in range(rows_count):
-        row_ents = entities[r * cols:(r + 1) * cols]
-        grid_row_h.append(max((entity_heights[e] for e in row_ents), default=HEADER_H))
+    # 위치 결정: graphviz 우선(관계선이 테이블을 피해 라우팅) → grid 폴백
+    gv_pos = None
+    try:
+        from converters.layout_graph import compute_graphviz_layout, LNode, LEdge
+        l_nodes = [LNode(e, e, "rect", w_in=TBL_W_BASE, h_in=entity_heights[e])
+                   for e in entities]
+        l_edges = [LEdge(a, b, lb) for (a, b, lb) in relations]
+        lay = compute_graphviz_layout(l_nodes, l_edges, [], "LR")
+        if lay is not None and len(lay.nodes) >= n:
+            gv_pos = {e: (lay.nodes[e].x / 96.0, lay.nodes[e].y / 96.0) for e in entities}
+    except Exception:
+        gv_pos = None
 
-    total_w = cols * TBL_W_BASE + (cols - 1) * TBL_W_GAP
-    total_h = sum(grid_row_h) + (rows_count - 1) * TBL_H_GAP
-
-    # scale-to-fit
-    scale = 1.0
-    if total_w > avail_w:
-        scale = min(scale, avail_w / total_w)
-    if total_h > avail_h:
-        scale = min(scale, avail_h / total_h)
-    scale = max(scale, 0.35)
+    positions: dict[str, tuple] = {}
+    if gv_pos is not None:
+        max_x = max(gv_pos[e][0] + TBL_W_BASE for e in entities)
+        max_y = max(gv_pos[e][1] + entity_heights[e] for e in entities)
+        scale = min(1.0, avail_w / max_x if max_x else 1.0,
+                    avail_h / max_y if max_y else 1.0)
+        scale = max(scale, 0.2)
+        sw, sh = max_x * scale, max_y * scale
+        ox = MARGIN + (avail_w - sw) / 2
+        oy = max(content_y, content_y + (avail_h - sh) / 2)
+        positions = {e: (ox + gv_pos[e][0] * scale, oy + gv_pos[e][1] * scale)
+                     for e in entities}
+    else:
+        cols = max(1, min(n, int((avail_w + TBL_W_GAP) / (TBL_W_BASE + TBL_W_GAP))))
+        rows_count = (n + cols - 1) // cols
+        grid_row_h = [
+            max((entity_heights[e] for e in entities[r * cols:(r + 1) * cols]),
+                default=HEADER_H)
+            for r in range(rows_count)
+        ]
+        total_w = cols * TBL_W_BASE + (cols - 1) * TBL_W_GAP
+        total_h = sum(grid_row_h) + (rows_count - 1) * TBL_H_GAP
+        scale = 1.0
+        if total_w > avail_w:
+            scale = min(scale, avail_w / total_w)
+        if total_h > avail_h:
+            scale = min(scale, avail_h / total_h)
+        scale = max(scale, 0.35)
+        tw = TBL_W_BASE * scale
+        twg = TBL_W_GAP * scale
+        thg = TBL_H_GAP * scale
+        aw = cols * tw + (cols - 1) * twg
+        ah = sum(h * scale for h in grid_row_h) + (rows_count - 1) * thg
+        sx0 = MARGIN + (avail_w - aw) / 2
+        sy0 = max(content_y, content_y + (avail_h - ah) / 2)
+        for i, e in enumerate(entities):
+            c, r = i % cols, i // cols
+            tx = sx0 + c * (tw + twg)
+            ty = sy0 + sum(grid_row_h[rr] * scale for rr in range(r)) + r * thg
+            positions[e] = (tx, ty)
 
     tbl_w = TBL_W_BASE * scale
-    tbl_w_gap = TBL_W_GAP * scale
-    tbl_h_gap = TBL_H_GAP * scale
     header_h = HEADER_H * scale
     row_h_s = ROW_H * scale
-
-    # 중앙 정렬
-    actual_w = cols * tbl_w + (cols - 1) * tbl_w_gap
-    actual_h = sum(h * scale for h in grid_row_h) + (rows_count - 1) * tbl_h_gap
-    start_x = MARGIN + (avail_w - actual_w) / 2
-    start_y = max(content_y, content_y + (avail_h - actual_h) / 2)
-
     font_hdr = max(6, int(9 * scale))
     font_body = max(5, int(7 * scale))
 
@@ -1468,7 +1556,7 @@ def _render_er_diagram(mermaid_code: str, title: str = "") -> bytes:
         cell.margin_right = Pt(3)
         cell.vertical_anchor = _MSO_ANCHOR.MIDDLE
         tf = cell.text_frame
-        tf.word_wrap = False
+        tf.word_wrap = True
         tf.clear()
         p = tf.paragraphs[0]
         p.alignment = align
@@ -1479,13 +1567,7 @@ def _render_er_diagram(mermaid_code: str, title: str = "") -> bytes:
         r.font.color.rgb = color
 
     for i, ent in enumerate(entities):
-        col = i % cols
-        row_idx = i // cols
-
-        tx = start_x + col * (tbl_w + tbl_w_gap)
-        ty = (start_y
-              + sum(grid_row_h[r] * scale for r in range(row_idx))
-              + row_idx * tbl_h_gap)
+        tx, ty = positions[ent]
 
         attrs = attrs_map.get(ent, [])
         ent_h = header_h + len(attrs) * row_h_s
@@ -1631,8 +1713,9 @@ def mermaid_to_pptx(mermaid_code: str, title: str = "") -> bytes:
     if not diagram.nodes:
         raise ValueError("Mermaid 코드에서 노드를 찾을 수 없습니다.")
 
-    # 2. 레이아웃 계산
-    compute_layout(diagram)
+    # 2. 레이아웃 계산 (graphviz 우선 → 실패 시 grid 폴백)
+    if not apply_graphviz_layout(diagram):
+        compute_layout(diagram)
 
     # 3. PPTX 생성
     prs = Presentation()

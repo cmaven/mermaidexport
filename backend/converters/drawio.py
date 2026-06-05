@@ -1279,6 +1279,25 @@ def _er_table_html(entity: str, rows: list[tuple[str, str]],
     return head + body + "</table>"
 
 
+def _er_graphviz_positions(entities, sizes, relations, pad=40.0):
+    """ER 엔티티를 graphviz로 배치한 {entity:(x,y)} px 좌표를 반환. 실패 시 None.
+
+    엔티티를 실제 테이블 크기의 노드로 넘겨 dot이 관계 엣지를 박스 사이로
+    라우팅하도록 한다(엣지가 테이블을 가로지르는 간섭 감소).
+    """
+    try:
+        from converters.layout_graph import compute_graphviz_layout, LNode, LEdge
+        l_nodes = [LNode(e, e, "rect", w_in=sizes[e][0] / 96.0, h_in=sizes[e][1] / 96.0)
+                   for e in entities]
+        l_edges = [LEdge(a, b, lbl) for (a, b, lbl) in relations]
+        layout = compute_graphviz_layout(l_nodes, l_edges, [], "LR")
+        if layout is None or len(layout.nodes) < len(entities):
+            return None
+        return {e: (layout.nodes[e].x + pad, layout.nodes[e].y + pad) for e in entities}
+    except Exception:
+        return None
+
+
 def _build_er_xml(
     entities: list[str],
     relations: list[tuple[str, str, str]],
@@ -1324,25 +1343,27 @@ def _build_er_xml(
         col_w[c] = max(col_w.get(c, 0.0), w)
         row_h[r] = max(row_h.get(r, 0.0), h)
 
-    col_x: dict[int, float] = {}
-    cx = 40.0
-    for c in sorted(col_w):
-        col_x[c] = cx
-        cx += col_w[c] + _ER_COL_GAP
-
-    row_y: dict[int, float] = {}
-    ry = 40.0
-    for r in sorted(row_h):
-        row_y[r] = ry
-        ry += row_h[r] + _ER_ROW_GAP
+    # 위치 결정: graphviz 우선(관계선이 박스를 피해 라우팅) → grid 폴백
+    positions = _er_graphviz_positions(entities, sizes, relations)
+    if positions is None:
+        col_x: dict[int, float] = {}
+        cx = 40.0
+        for c in sorted(col_w):
+            col_x[c] = cx
+            cx += col_w[c] + _ER_COL_GAP
+        row_y: dict[int, float] = {}
+        ry = 40.0
+        for r in sorted(row_h):
+            row_y[r] = ry
+            ry += row_h[r] + _ER_ROW_GAP
+        positions = {e: (col_x[i % cols], row_y[i // cols])
+                     for i, e in enumerate(entities)}
 
     # ── 엔티티 박스 추가 ─────────────────────────────────────────
     id_map: dict[str, str] = {}
     for i, e in enumerate(entities):
-        c, r = i % cols, i // cols
         w, h = sizes[e]
-        x = col_x[c]
-        y = row_y[r]
+        x, y = positions[e]
         fill, stroke = NODE_COLORS[i % len(NODE_COLORS)]
         style = (
             f"rounded=0;whiteSpace=wrap;html=1;verticalAlign=top;"
@@ -1363,6 +1384,104 @@ def _build_er_xml(
         _add_edge_cell(root, sc, tc, lbl, _STYLE_SOLID_EDGE, next_id=next_id)
 
     return _serialize_xml(mxfile)
+
+
+# ──────────────────────────────────────────────
+# Graphviz 좌표 기반 flowchart 빌더 (박스 겹침/엣지 교차 최소화)
+# ──────────────────────────────────────────────
+
+_SHAPE_TO_LAYOUT = {
+    "rectangle": "rect", "rounded": "round", "parallelogram": "rect",
+    "diamond": "diamond", "circle": "circle",
+}
+
+
+def _gv_cluster_style(sg_idx: int) -> str:
+    fill, stroke = SUBGRAPH_COLORS[sg_idx % len(SUBGRAPH_COLORS)]
+    return (
+        "rounded=1;arcSize=6;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 4;"
+        "verticalAlign=top;align=center;spacingTop=4;"
+        f"fillColor={fill};strokeColor={stroke};fontColor={stroke};"
+        "fontStyle=1;fontFamily=NanumSquare;fontSize=14;"
+    )
+
+
+def _build_flowchart_xml_from_layout(nodes, edges, subgraphs, layout, title):
+    """LayoutResult 좌표를 draw.io XML로 주입한다(클러스터/노드 절대좌표)."""
+    next_id = _make_id_gen()
+    mxfile = ET.Element("mxfile", host="drawio.py", version="21.0.0")
+    diagram = ET.SubElement(mxfile, "diagram", id="diagram-1", name=title or "Diagram")
+    pw = int(max(layout.width + 80, 800))
+    ph = int(max(layout.height + 80, 600))
+    model = ET.SubElement(diagram, "mxGraphModel",
+        dx="1422", dy="762", grid="1", gridSize="10", guides="1", tooltips="1",
+        connect="1", arrows="1", fold="1", page="1", pageScale="1",
+        pageWidth=str(pw), pageHeight=str(ph), math="0", shadow="0")
+    root = ET.SubElement(model, "root")
+    _make_root_cells(root)
+    pad = 40.0
+
+    for sg_idx, sg in enumerate(subgraphs):
+        box = layout.clusters.get(sg["id"])
+        if box is None:
+            continue
+        cid = next_id()
+        cell = ET.SubElement(root, "mxCell", id=cid, value=sg["label"],
+            style=_gv_cluster_style(sg_idx), vertex="1", parent="1")
+        ET.SubElement(cell, "mxGeometry", x=str(round(box.x + pad, 1)),
+            y=str(round(box.y + pad, 1)), width=str(round(box.w, 1)),
+            height=str(round(box.h, 1)), **{"as": "geometry"})
+
+    node_to_sg_idx: dict[str, int] = {}
+    for sg_idx, sg in enumerate(subgraphs):
+        for nid in sg["nodes"]:
+            node_to_sg_idx[nid] = sg_idx
+
+    id_map: dict[str, str] = {}
+    for node_idx, node in enumerate(nodes):
+        box = layout.nodes.get(node["id"])
+        if box is None:
+            continue
+        color_idx = node_to_sg_idx.get(node["id"], node_idx)
+        style = _shape_to_style(node["shape"], color_idx)
+        cid = _add_node_cell(root, node["id"], node["label"], style,
+            round(box.x + pad, 1), round(box.y + pad, 1),
+            round(box.w, 1), round(box.h, 1), parent="1", next_id=next_id)
+        id_map[node["id"]] = cid
+
+    for edge in edges:
+        sc = id_map.get(edge["source"])
+        tc = id_map.get(edge["target"])
+        if sc is None or tc is None:
+            continue
+        sb = layout.nodes.get(edge["source"])
+        tb = layout.nodes.get(edge["target"])
+        style = _edge_style(edge["style"])
+        if sb and tb:
+            ex, ey, enx, eny = _edge_anchor((sb.x, sb.y), (sb.w, sb.h),
+                                            (tb.x, tb.y), (tb.w, tb.h))
+            style += (f"exitX={ex};exitY={ey};exitDx=0;exitDy=0;"
+                      f"entryX={enx};entryY={eny};entryDx=0;entryDy=0;")
+        _add_edge_cell(root, sc, tc, edge["label"], style, parent="1", next_id=next_id)
+
+    return _serialize_xml(mxfile)
+
+
+def _try_graphviz_flowchart(nodes, edges, subgraphs, direction, title):
+    """graphviz 레이아웃으로 flowchart XML 생성 시도. 실패 시 None."""
+    try:
+        from converters.layout_graph import (
+            compute_graphviz_layout, LNode, LEdge, LCluster)
+        l_nodes = [LNode(n["id"], n["label"], _SHAPE_TO_LAYOUT.get(n["shape"], "rect"))
+                   for n in nodes]
+        l_edges = [LEdge(e["source"], e["target"], e["label"]) for e in edges]
+        l_clusters = [LCluster(sg["id"], sg["label"], list(sg["nodes"])) for sg in subgraphs]
+        layout = compute_graphviz_layout(l_nodes, l_edges, l_clusters, direction)
+        if layout is None or not layout.nodes:
+            return None
+        return _build_flowchart_xml_from_layout(nodes, edges, subgraphs, layout, title)
+    except Exception:
+        return None
 
 
 # ──────────────────────────────────────────────
@@ -1406,12 +1525,15 @@ def mermaid_to_drawio(mermaid_code: str, title: str = "") -> str:
         if entities:
             return _build_er_xml(entities, relations, attrs, title)
 
-    # flowchart / graph 분기
+    # flowchart / graph 분기 — graphviz 레이아웃 우선(겹침/교차 최소), 실패 시 grid 폴백
     if re.match(r'(?:graph|flowchart)\s+', first_line):
         direction = _detect_direction(code)
         nodes      = parse_mermaid_nodes(code)
         edges      = parse_mermaid_edges(code)
         subgraphs  = parse_mermaid_subgraphs(code)
+        gv = _try_graphviz_flowchart(nodes, edges, subgraphs, direction, title)
+        if gv is not None:
+            return gv
         return _build_flowchart_xml(nodes, edges, subgraphs, direction, title)
 
     # 기타 타입: 노드/엣지 파싱만 시도

@@ -62,6 +62,13 @@ def _new_id() -> str:
     return str(uuid.uuid4())
 
 
+def _norm_label(s: str) -> str:
+    """라벨 정규화: <br/> → 개행, HTML 엔티티 디코드(&lt;vendor&gt; → <vendor>)."""
+    import html
+    s = (s or "").replace('<br/>', '\n').replace('<br>', '\n')
+    return html.unescape(s)
+
+
 def _parse_sequence(mermaid_code: str) -> tuple[list[dict], list[dict]]:
     """Mermaid sequenceDiagram 코드를 파싱하여 참여자와 메시지를 반환한다.
 
@@ -693,31 +700,38 @@ def _build_er_elements(
         attrs = entity_attrs.get(ent, [])
         entity_heights[ent] = _ER_HEADER_HEIGHT + len(attrs) * _ER_ROW_HEIGHT
 
-    # 그리드 레이아웃 (최대 _ER_MAX_COLS 열, 행별 가변 높이)
+    # 위치 결정: graphviz 우선(관계선이 테이블을 피해 라우팅) → grid 폴백
     n = len(entities)
-    n_cols = min(n, _ER_MAX_COLS)
-    n_rows = (n + n_cols - 1) // n_cols
+    gv_er = None
+    try:
+        from converters.layout_graph import compute_graphviz_layout, LNode, LEdge
+        l_nodes = [LNode(e, e, "rect", w_in=_ER_ENTITY_WIDTH / 96.0,
+                         h_in=entity_heights[e] / 96.0) for e in entities]
+        l_edges = [LEdge(a, b, lb) for (a, b, lb) in relations]
+        lay = compute_graphviz_layout(l_nodes, l_edges, [], "LR")
+        if lay is not None and len(lay.nodes) >= n:
+            gv_er = {e: (int(lay.nodes[e].x) + _ER_START_X,
+                         int(lay.nodes[e].y) + _ER_START_Y) for e in entities}
+    except Exception:
+        gv_er = None
 
-    # 행별 최대 높이 계산
-    row_max_h: dict[int, int] = {}
-    for i, ent in enumerate(entities):
-        row = i // n_cols
-        row_max_h[row] = max(row_max_h.get(row, 0), entity_heights[ent])
-
-    # 행별 y 시작점 계산
-    row_y: dict[int, int] = {}
-    y_acc = _ER_START_Y
-    for row in range(n_rows):
-        row_y[row] = y_acc
-        y_acc += row_max_h.get(row, _ER_HEADER_HEIGHT) + _ER_V_GAP
-
-    # 엔티티별 위치 결정
-    for i, ent in enumerate(entities):
-        row = i // n_cols
-        col = i % n_cols
-        x = _ER_START_X + col * (_ER_ENTITY_WIDTH + _ER_H_GAP)
-        y = row_y[row]
-        entity_positions[ent] = (x, y)
+    if gv_er is not None:
+        entity_positions.update(gv_er)
+    else:
+        n_cols = min(n, _ER_MAX_COLS)
+        n_rows = (n + n_cols - 1) // n_cols
+        row_max_h: dict[int, int] = {}
+        for i, ent in enumerate(entities):
+            row = i // n_cols
+            row_max_h[row] = max(row_max_h.get(row, 0), entity_heights[ent])
+        row_y: dict[int, int] = {}
+        y_acc = _ER_START_Y
+        for row in range(n_rows):
+            row_y[row] = y_acc
+            y_acc += row_max_h.get(row, _ER_HEADER_HEIGHT) + _ER_V_GAP
+        for i, ent in enumerate(entities):
+            x = _ER_START_X + (i % n_cols) * (_ER_ENTITY_WIDTH + _ER_H_GAP)
+            entity_positions[ent] = (x, row_y[i // n_cols])
 
     # 엔티티 렌더 (사각형 + 멀티라인 텍스트)
     for color_idx, ent in enumerate(entities):
@@ -955,12 +969,12 @@ def _parse_mermaid(mermaid_code: str) -> tuple[dict, list, dict]:
                 dst_id, dst_label = _extract_node_id_label(dst_raw)
 
                 if src_id:
-                    nodes.setdefault(src_id, (src_label or src_id).replace('<br/>', '\n').replace('<br>', '\n'))
+                    nodes.setdefault(src_id, _norm_label(src_label or src_id))
                     if current_subgraph and src_id not in subgraphs[current_subgraph]["nodes"]:
                         subgraphs[current_subgraph]["nodes"].append(src_id)
 
                 if dst_id:
-                    nodes.setdefault(dst_id, (dst_label or dst_id).replace('<br/>', '\n').replace('<br>', '\n'))
+                    nodes.setdefault(dst_id, _norm_label(dst_label or dst_id))
                     if current_subgraph and dst_id not in subgraphs[current_subgraph]["nodes"]:
                         subgraphs[current_subgraph]["nodes"].append(dst_id)
 
@@ -979,7 +993,7 @@ def _parse_mermaid(mermaid_code: str) -> tuple[dict, list, dict]:
             if m:
                 nid = m.group(1).strip()
                 label = m.group(2).strip()
-                nodes[nid] = label.replace('<br/>', '\n').replace('<br>', '\n')
+                nodes[nid] = _norm_label(label)
                 if current_subgraph and nid not in subgraphs[current_subgraph]["nodes"]:
                     subgraphs[current_subgraph]["nodes"].append(nid)
                 break
@@ -1068,6 +1082,31 @@ def _topo_levels(node_ids: list[str], edges: list[dict]) -> list[list[str]]:
     return levels
 
 
+def _graphviz_node_positions(nodes, edges, subgraphs, direction):
+    """graphviz로 flowchart 노드 좌표를 계산해 {id:(x,y)} px 반환. 실패 시 None.
+
+    노드를 excalidraw 실제 크기(_NODE_WIDTH×_NODE_HEIGHT)로 넘겨 dot이 겹침
+    없이 배치하도록 한다. 서브그래프 배경은 호출부가 노드 좌표로 계산한다.
+    """
+    try:
+        from converters.layout_graph import (
+            compute_graphviz_layout, LNode, LEdge, LCluster)
+        w_in, h_in = _NODE_WIDTH / 96.0, _NODE_HEIGHT / 96.0
+        l_nodes = [LNode(nid, label or nid, "rect", w_in=w_in, h_in=h_in)
+                   for nid, label in nodes.items()]
+        l_edges = [LEdge(e["from"], e["to"], e.get("label", "")) for e in edges]
+        l_clusters = [LCluster(sid, info.get("label", sid), list(info["nodes"]))
+                      for sid, info in subgraphs.items()]
+        layout = compute_graphviz_layout(l_nodes, l_edges, l_clusters, direction)
+        if layout is None or len(layout.nodes) < len(nodes):
+            return None
+        pad = 40
+        return {nid: (int(box.x) + pad, int(box.y) + pad)
+                for nid, box in layout.nodes.items()}
+    except Exception:
+        return None
+
+
 def _compute_layout(
     nodes: dict[str, str],
     edges: list[dict],
@@ -1075,6 +1114,8 @@ def _compute_layout(
     direction: str = 'TB',
 ) -> dict[str, tuple[int, int]]:
     """노드를 방향(direction)에 맞게 배치한다.
+
+    graphviz 사용 가능 시 우선(겹침/교차 최소), 실패 시 아래 grid 폴백.
 
     - LR/RL: 서브그래프를 가로로 나란히, 서브그래프 내부 노드도 가로 배치
     - TB/TD/BT: 서브그래프를 가로로 나란히, 서브그래프 내부 노드는 세로 배치
@@ -1085,6 +1126,10 @@ def _compute_layout(
     """
     if not nodes:
         return {}
+
+    gv = _graphviz_node_positions(nodes, edges, subgraphs, direction)
+    if gv is not None:
+        return gv
 
     is_lr = direction in ('LR', 'RL')
     positions: dict[str, tuple[int, int]] = {}
