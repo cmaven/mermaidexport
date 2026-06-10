@@ -1,7 +1,8 @@
 /**
  * app.js: Mermaid Web Converter 클라이언트 로직
  * 상세: 파일 업로드, 변환 API 호출, 결과 렌더링, 다운로드 처리
- * 생성일: 2026-04-07
+ *       Mermaid 확대 모달(openMermaidZoomModal) 포함
+ * 생성일: 2026-04-07 | 수정일: 2026-06-10
  */
 
 'use strict';
@@ -378,6 +379,25 @@ function createMermaidRenderBlock(jobId, index, title) {
         svgEl.setAttribute('role', 'img');
         svgEl.setAttribute('aria-label', `${title} Mermaid 렌더링`);
       }
+
+      // 확대 버튼 바 삽입 (SVG 로드 성공 시 한 번만)
+      const actionsBar = document.createElement('div');
+      actionsBar.className = 'mermaid-render-actions';
+      const zoomOpenBtn = document.createElement('button');
+      zoomOpenBtn.type      = 'button';
+      zoomOpenBtn.className = 'mermaid-zoom-open-btn';
+      zoomOpenBtn.setAttribute('aria-label', `${title} 전체화면 확대`);
+      zoomOpenBtn.innerHTML =
+        '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">'
+        + '<path d="M9.5 2.5H13.5V6.5M6.5 13.5H2.5V9.5"/>'
+        + '</svg>확대';
+      zoomOpenBtn.addEventListener('click', () => {
+        const svgInBody = body.querySelector('svg');
+        if (svgInBody) openMermaidZoomModal(svgInBody, title);
+      });
+      actionsBar.appendChild(zoomOpenBtn);
+      block.insertBefore(actionsBar, body);
+
     } catch (err) {
       loaded = false; // 실패 시 재시도 허용
       body.innerHTML =
@@ -388,6 +408,144 @@ function createMermaidRenderBlock(jobId, index, title) {
   });
 
   return block;
+}
+
+/**
+ * Mermaid SVG 전체화면 확대 모달을 엽니다.
+ * 기존 모달이 열려 있으면 먼저 닫은 후 새로 생성합니다 (싱글톤).
+ * @param {SVGElement} sourceSvgEl - 복제 대상 SVG 요소
+ * @param {string} title - 모달 제목 (접근성 라벨)
+ */
+function openMermaidZoomModal(sourceSvgEl, title) {
+  closeMermaidZoomModal(); // 기존 모달 제거 (싱글톤)
+
+  let currentScale = 1;
+  const SCALE_STEP = 0.25;
+  const SCALE_MIN  = 0.25;
+  const SCALE_MAX  = 5;
+
+  // ── 오버레이 (배경 딤처리) ──────────────────────────────────
+  const overlay = document.createElement('div');
+  overlay.className = 'mermaid-zoom-overlay';
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
+  overlay.setAttribute('aria-label', `${title} — 확대 보기`);
+
+  // ── 다이얼로그 패널 ─────────────────────────────────────────
+  const dialog = document.createElement('div');
+  dialog.className = 'mermaid-zoom-dialog';
+
+  // ── 헤더 ──────────────────────────────────────────────────
+  const header = document.createElement('div');
+  header.className = 'mermaid-zoom-header';
+
+  const titleEl = document.createElement('span');
+  titleEl.className = 'mermaid-zoom-title';
+  titleEl.textContent = title;
+
+  // ── 줌 컨트롤 ─────────────────────────────────────────────
+  const controls = document.createElement('div');
+  controls.className = 'mermaid-zoom-controls';
+
+  const minusBtn = document.createElement('button');
+  minusBtn.type = 'button';
+  minusBtn.className = 'mermaid-zoom-ctrl-btn';
+  minusBtn.textContent = '－';
+  minusBtn.setAttribute('aria-label', '축소');
+
+  const resetBtn = document.createElement('button');
+  resetBtn.type = 'button';
+  resetBtn.className = 'mermaid-zoom-ctrl-btn mermaid-zoom-ctrl-reset';
+  resetBtn.textContent = '100%';
+  resetBtn.setAttribute('aria-label', '원래 크기로');
+
+  const plusBtn = document.createElement('button');
+  plusBtn.type = 'button';
+  plusBtn.className = 'mermaid-zoom-ctrl-btn';
+  plusBtn.textContent = '＋';
+  plusBtn.setAttribute('aria-label', '확대');
+
+  controls.appendChild(minusBtn);
+  controls.appendChild(resetBtn);
+  controls.appendChild(plusBtn);
+
+  // ── 닫기 버튼 ─────────────────────────────────────────────
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'mermaid-zoom-close';
+  closeBtn.setAttribute('aria-label', '모달 닫기');
+  closeBtn.textContent = '✕';
+  closeBtn.addEventListener('click', closeMermaidZoomModal);
+
+  header.appendChild(titleEl);
+  header.appendChild(controls);
+  header.appendChild(closeBtn);
+
+  // ── 뷰포트 & SVG 컨테이너 ──────────────────────────────────
+  const viewport = document.createElement('div');
+  viewport.className = 'mermaid-zoom-viewport';
+
+  const content = document.createElement('div');
+  content.className = 'mermaid-zoom-content';
+
+  // SVG 복제 후 삽입 (원본 불변)
+  const clonedSvg = sourceSvgEl.cloneNode(true);
+  clonedSvg.removeAttribute('width');
+  clonedSvg.removeAttribute('height');
+  content.appendChild(clonedSvg);
+  viewport.appendChild(content);
+
+  dialog.appendChild(header);
+  dialog.appendChild(viewport);
+  overlay.appendChild(dialog);
+  document.body.appendChild(overlay);
+  document.body.style.overflow = 'hidden'; // 배경 스크롤 잠금
+
+  // ── 줌 적용 함수 ─────────────────────────────────────────
+  function applyScale(newScale) {
+    currentScale = Math.min(SCALE_MAX, Math.max(SCALE_MIN, newScale));
+    content.style.transform = `scale(${currentScale})`;
+    resetBtn.textContent = `${Math.round(currentScale * 100)}%`;
+  }
+
+  // 버튼 이벤트 연결
+  minusBtn.addEventListener('click', () => applyScale(currentScale - SCALE_STEP));
+  plusBtn.addEventListener('click',  () => applyScale(currentScale + SCALE_STEP));
+  resetBtn.addEventListener('click', () => applyScale(1));
+
+  // 배경 클릭으로 닫기
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) closeMermaidZoomModal();
+  });
+
+  // 마우스 휠 줌 (뷰포트 영역)
+  viewport.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    applyScale(currentScale + (e.deltaY < 0 ? SCALE_STEP : -SCALE_STEP));
+  }, { passive: false });
+
+  // ESC 키로 닫기
+  function onKeydown(e) {
+    if (e.key === 'Escape') { e.preventDefault(); closeMermaidZoomModal(); }
+  }
+  document.addEventListener('keydown', onKeydown);
+  overlay._onKeydown = onKeydown; // cleanup 참조 보관
+
+  // 포커스 이동 (키보드 접근성)
+  requestAnimationFrame(() => closeBtn.focus());
+}
+
+/**
+ * 열려 있는 Mermaid 확대 모달을 닫고 DOM에서 제거합니다.
+ */
+function closeMermaidZoomModal() {
+  const existing = document.querySelector('.mermaid-zoom-overlay');
+  if (!existing) return;
+  if (existing._onKeydown) {
+    document.removeEventListener('keydown', existing._onKeydown);
+  }
+  existing.remove();
+  document.body.style.overflow = '';
 }
 
 /**

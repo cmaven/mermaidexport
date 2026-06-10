@@ -194,9 +194,9 @@ def _ldraw_pos(ldraw_ops) -> Optional[tuple[float, float]]:
     return None
 
 
-def compute_graphviz_layout(nodes, edges, clusters, direction="TB",
-                            scale=_PX_SCALE) -> Optional[LayoutResult]:
-    """dot으로 레이아웃을 계산해 LayoutResult(좌상단 px)를 반환한다.
+def _layout_once(nodes, edges, clusters, direction="TB",
+                 scale=_PX_SCALE) -> Optional[LayoutResult]:
+    """주어진 방향으로 dot 레이아웃을 1회 계산한다.
 
     ortho → polyline → spline 순으로 splines를 낮춰 재시도. 모두 실패 시 None.
     """
@@ -266,3 +266,21 @@ def compute_graphviz_layout(nodes, edges, clusters, direction="TB",
                                      label=e.get("label", ""),
                                      points=pts, label_pos=lpos))
     return result
+
+
+# ──────────────────────────────────────────────
+# 공개 래퍼: 종횡비 기반 방향(TB↔LR) 자동 선택
+# ──────────────────────────────────────────────
+
+def compute_graphviz_layout(nodes, edges, clusters, direction="TB",
+                            scale=_PX_SCALE, target_aspect=None):
+    base = _layout_once(nodes, edges, clusters, direction, scale)
+    if base is None or not target_aspect or target_aspect <= 0:
+        return base
+    flipped = "LR" if direction.upper() != "LR" else "TB"
+    alt = _layout_once(nodes, edges, clusters, flipped, scale)
+    def _fit(r):                      # 목표 박스(폭=target_aspect, 높이=1) 기준 상대 배율
+        cw, ch = max(r.width, 1.0), max(r.height, 1.0)
+        return min(target_aspect / cw, 1.0 / ch)
+    cands = [base] + ([alt] if (alt and alt.nodes) else [])
+    return max(cands, key=_fit)       # 블록이 가장 커지는 방향 선택

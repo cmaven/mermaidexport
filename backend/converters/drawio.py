@@ -1290,7 +1290,7 @@ def _er_graphviz_positions(entities, sizes, relations, pad=40.0):
         l_nodes = [LNode(e, e, "rect", w_in=sizes[e][0] / 96.0, h_in=sizes[e][1] / 96.0)
                    for e in entities]
         l_edges = [LEdge(a, b, lbl) for (a, b, lbl) in relations]
-        layout = compute_graphviz_layout(l_nodes, l_edges, [], "LR")
+        layout = compute_graphviz_layout(l_nodes, l_edges, [], "LR", target_aspect=1.7)
         if layout is None or len(layout.nodes) < len(entities):
             return None
         return {e: (layout.nodes[e].x + pad, layout.nodes[e].y + pad) for e in entities}
@@ -1476,7 +1476,7 @@ def _try_graphviz_flowchart(nodes, edges, subgraphs, direction, title):
                    for n in nodes]
         l_edges = [LEdge(e["source"], e["target"], e["label"]) for e in edges]
         l_clusters = [LCluster(sg["id"], sg["label"], list(sg["nodes"])) for sg in subgraphs]
-        layout = compute_graphviz_layout(l_nodes, l_edges, l_clusters, direction)
+        layout = compute_graphviz_layout(l_nodes, l_edges, l_clusters, direction, target_aspect=1.7)
         if layout is None or not layout.nodes:
             return None
         return _build_flowchart_xml_from_layout(nodes, edges, subgraphs, layout, title)

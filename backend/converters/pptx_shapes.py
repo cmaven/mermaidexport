@@ -504,7 +504,10 @@ def apply_graphviz_layout(diagram: ParsedDiagram) -> bool:
     l_edges = [LEdge(e.source, e.target, e.label) for e in diagram.edges]
     l_clusters = [LCluster(sg.id, sg.label, list(sg.node_ids))
                   for sg in diagram.subgraphs.values()]
-    layout = compute_graphviz_layout(l_nodes, l_edges, l_clusters, diagram.direction)
+    layout = compute_graphviz_layout(
+        l_nodes, l_edges, l_clusters, diagram.direction,
+        target_aspect=(SLIDE_W - 2 * MARGIN) / (SLIDE_H - TITLE_H - 2 * MARGIN)
+    )
     if layout is None or not layout.nodes:
         return False
 
@@ -1476,7 +1479,10 @@ def _render_er_diagram(mermaid_code: str, title: str = "") -> bytes:
         l_nodes = [LNode(e, e, "rect", w_in=TBL_W_BASE, h_in=entity_heights[e])
                    for e in entities]
         l_edges = [LEdge(a, b, lb) for (a, b, lb) in relations]
-        lay = compute_graphviz_layout(l_nodes, l_edges, [], "LR")
+        lay = compute_graphviz_layout(
+            l_nodes, l_edges, [], "LR",
+            target_aspect=(SLIDE_W - 2 * MARGIN) / (SLIDE_H - TITLE_H - 2 * MARGIN)
+        )
         if lay is not None and len(lay.nodes) >= n:
             gv_pos = {e: (lay.nodes[e].x / 96.0, lay.nodes[e].y / 96.0) for e in entities}
     except Exception:

@@ -708,7 +708,7 @@ def _build_er_elements(
         l_nodes = [LNode(e, e, "rect", w_in=_ER_ENTITY_WIDTH / 96.0,
                          h_in=entity_heights[e] / 96.0) for e in entities]
         l_edges = [LEdge(a, b, lb) for (a, b, lb) in relations]
-        lay = compute_graphviz_layout(l_nodes, l_edges, [], "LR")
+        lay = compute_graphviz_layout(l_nodes, l_edges, [], "LR", target_aspect=1.7)
         if lay is not None and len(lay.nodes) >= n:
             gv_er = {e: (int(lay.nodes[e].x) + _ER_START_X,
                          int(lay.nodes[e].y) + _ER_START_Y) for e in entities}
@@ -1097,7 +1097,7 @@ def _graphviz_node_positions(nodes, edges, subgraphs, direction):
         l_edges = [LEdge(e["from"], e["to"], e.get("label", "")) for e in edges]
         l_clusters = [LCluster(sid, info.get("label", sid), list(info["nodes"]))
                       for sid, info in subgraphs.items()]
-        layout = compute_graphviz_layout(l_nodes, l_edges, l_clusters, direction)
+        layout = compute_graphviz_layout(l_nodes, l_edges, l_clusters, direction, target_aspect=1.7)
         if layout is None or len(layout.nodes) < len(nodes):
             return None
         pad = 40
