@@ -265,17 +265,32 @@ function createDiagramCard(jobId, diagram, cardIndex) {
   img.alt = `${title} 미리보기`;
   img.src = ENDPOINTS.preview(jobId, idx);
 
+  // 미리보기 확대 버튼 (이미지 로드 성공 시에만 노출)
+  const previewZoomBtn = document.createElement('button');
+  previewZoomBtn.type = 'button';
+  previewZoomBtn.className = 'preview-zoom-btn';
+  previewZoomBtn.setAttribute('aria-label', `${title} 미리보기 확대`);
+  previewZoomBtn.hidden = true;
+  previewZoomBtn.innerHTML =
+    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">'
+    + '<path d="M9.5 2.5H13.5V6.5M6.5 13.5H2.5V9.5"/>'
+    + '</svg>확대';
+  previewZoomBtn.addEventListener('click', () => openMermaidZoomModal(img, title));
+
   img.addEventListener('load', () => {
     img.classList.remove('diagram-img-loading');
+    previewZoomBtn.hidden = false;
   });
 
   img.addEventListener('error', () => {
     img.classList.add('diagram-img-error');
+    previewZoomBtn.hidden = true;
     const placeholder = createPreviewPlaceholder();
     preview.appendChild(placeholder);
   });
 
   preview.appendChild(img);
+  preview.appendChild(previewZoomBtn);
 
   // 다운로드 버튼 영역
   const actions = document.createElement('div');
@@ -411,9 +426,9 @@ function createMermaidRenderBlock(jobId, index, title) {
 }
 
 /**
- * Mermaid SVG 전체화면 확대 모달을 엽니다.
+ * 전체화면 확대 모달을 엽니다 (SVG 렌더 / PNG 미리보기 공용).
  * 기존 모달이 열려 있으면 먼저 닫은 후 새로 생성합니다 (싱글톤).
- * @param {SVGElement} sourceSvgEl - 복제 대상 SVG 요소
+ * @param {SVGElement|HTMLImageElement} sourceSvgEl - 복제 대상 SVG 또는 IMG 요소
  * @param {string} title - 모달 제목 (접근성 라벨)
  */
 function openMermaidZoomModal(sourceSvgEl, title) {
@@ -488,11 +503,28 @@ function openMermaidZoomModal(sourceSvgEl, title) {
   const content = document.createElement('div');
   content.className = 'mermaid-zoom-content';
 
-  // SVG 복제 후 삽입 (원본 불변)
-  const clonedSvg = sourceSvgEl.cloneNode(true);
-  clonedSvg.removeAttribute('width');
-  clonedSvg.removeAttribute('height');
-  content.appendChild(clonedSvg);
+  // 소스 복제 후 삽입 (원본 불변).
+  // - SVG: viewBox 기준 명시적 width/height를 부여해야 shrink-to-fit 컨테이너
+  //        안에서도 0 크기로 붕괴하지 않는다. (CSS max-width/height가 축소 담당)
+  // - IMG(변환 미리보기 PNG 등): 같은 src로 새 img를 만들어 표시.
+  let clonedNode;
+  if (sourceSvgEl.tagName && sourceSvgEl.tagName.toLowerCase() === 'svg') {
+    clonedNode = sourceSvgEl.cloneNode(true);
+    const vb = (sourceSvgEl.getAttribute('viewBox') || '')
+      .split(/[\s,]+/).map(Number).filter((n) => !Number.isNaN(n));
+    if (vb.length === 4 && vb[2] > 0 && vb[3] > 0) {
+      clonedNode.setAttribute('width', vb[2]);
+      clonedNode.setAttribute('height', vb[3]);
+    } else {
+      clonedNode.removeAttribute('width');
+      clonedNode.removeAttribute('height');
+    }
+  } else {
+    clonedNode = document.createElement('img');
+    clonedNode.src = sourceSvgEl.currentSrc || sourceSvgEl.src;
+    clonedNode.alt = sourceSvgEl.alt || title;
+  }
+  content.appendChild(clonedNode);
   viewport.appendChild(content);
 
   dialog.appendChild(header);
