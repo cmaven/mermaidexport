@@ -111,8 +111,9 @@ def build_dot(nodes, edges, clusters, direction="TB", splines="ortho") -> str:
         "digraph G {",
         f"  rankdir={rankdir};",
         f"  splines={splines};",
-        "  nodesep=0.5;",
-        "  ranksep=0.75;",
+        "  nodesep=0.7;",
+        "  ranksep=0.95;",
+        "  pad=0.3;",
         "  node [fixedsize=true, fontsize=14];",
         "  edge [fontsize=11];",
     ]

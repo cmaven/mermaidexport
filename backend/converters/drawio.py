@@ -613,8 +613,12 @@ def _add_edge_cell(
     style: str,
     parent: str = "1",
     next_id: callable = None,
+    points: list[tuple[float, float]] | None = None,
 ) -> str:
-    """엣지 mxCell을 추가하고 cell id를 반환한다."""
+    """엣지 mxCell을 추가하고 cell id를 반환한다.
+
+    points가 있으면 중간 waypoints를 Array로 넣어 orthogonal 경로를 고정한다.
+    """
     cid = next_id()
     cell = ET.SubElement(root, "mxCell",
         id=cid,
@@ -625,7 +629,11 @@ def _add_edge_cell(
         target=target_cid,
         parent=parent,
     )
-    ET.SubElement(cell, "mxGeometry", relative="1", **{"as": "geometry"})
+    geom = ET.SubElement(cell, "mxGeometry", relative="1", **{"as": "geometry"})
+    if points and len(points) >= 1:
+        arr = ET.SubElement(geom, "Array", **{"as": "points"})
+        for x, y in points:
+            ET.SubElement(arr, "mxPoint", x=str(round(x, 1)), y=str(round(y, 1)))
     return cid
 
 
@@ -1407,7 +1415,9 @@ def _gv_cluster_style(sg_idx: int) -> str:
 
 
 def _build_flowchart_xml_from_layout(nodes, edges, subgraphs, layout, title):
-    """LayoutResult 좌표를 draw.io XML로 주입한다(클러스터/노드 절대좌표)."""
+    """LayoutResult 좌표를 draw.io XML로 주입한다(클러스터/노드/엣지 waypoints)."""
+    from collections import defaultdict
+
     next_id = _make_id_gen()
     mxfile = ET.Element("mxfile", host="drawio.py", version="21.0.0")
     diagram = ET.SubElement(mxfile, "diagram", id="diagram-1", name=title or "Diagram")
@@ -1449,6 +1459,17 @@ def _build_flowchart_xml_from_layout(nodes, edges, subgraphs, layout, title):
             round(box.w, 1), round(box.h, 1), parent="1", next_id=next_id)
         id_map[node["id"]] = cid
 
+    # Graphviz 엣지 경로 큐 (source,target) → intermediate waypoints
+    path_q: dict[tuple[str, str], list] = defaultdict(list)
+    for ep in layout.edges:
+        if not ep.source or not ep.target or len(ep.points) < 2:
+            continue
+        # draw.io Array는 중간점만 (끝점은 terminal이 담당)
+        mid = ep.points[1:-1] if len(ep.points) > 2 else []
+        path_q[(ep.source, ep.target)].append(
+            [(x + pad, y + pad) for x, y in mid]
+        )
+
     for edge in edges:
         sc = id_map.get(edge["source"])
         tc = id_map.get(edge["target"])
@@ -1462,7 +1483,10 @@ def _build_flowchart_xml_from_layout(nodes, edges, subgraphs, layout, title):
                                             (tb.x, tb.y), (tb.w, tb.h))
             style += (f"exitX={ex};exitY={ey};exitDx=0;exitDy=0;"
                       f"entryX={enx};entryY={eny};entryDx=0;entryDy=0;")
-        _add_edge_cell(root, sc, tc, edge["label"], style, parent="1", next_id=next_id)
+        bucket = path_q.get((edge["source"], edge["target"]))
+        pts = bucket.pop(0) if bucket else None
+        _add_edge_cell(root, sc, tc, edge["label"], style, parent="1",
+                       next_id=next_id, points=pts)
 
     return _serialize_xml(mxfile)
 

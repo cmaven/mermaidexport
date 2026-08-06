@@ -128,6 +128,9 @@ class Edge:
     target: str
     label: str = ""
     arrow: str = "-->"           # --> | --- | -.-
+    # Graphviz 경로(슬라이드 inch). 비어 있으면 ELBOW 폴백.
+    points: list[tuple[float, float]] = field(default_factory=list)
+    label_pos: Optional[tuple[float, float]] = None
 
 
 @dataclass
@@ -151,6 +154,8 @@ class ParsedDiagram:
     edges: list[Edge] = field(default_factory=list)
     subgraphs: dict[str, Subgraph] = field(default_factory=dict)
     direction: str = "TB"        # TB | LR | RL | BT
+    slide_w: float = 13.333      # inches — 레이아웃 후 확장 가능
+    slide_h: float = 7.5
 
 
 # ──────────────────────────────────────────────
@@ -439,8 +444,95 @@ def compute_layout(diagram: ParsedDiagram) -> None:
             list(diagram.nodes.keys()), diagram.nodes, content_x, content_y, avail_w
         )
 
-    # 오버플로우 감지 → 자동 축소
-    _scale_to_fit(diagram, content_x, content_y, avail_w, avail_h)
+    # 오버플로우 감지 → 슬라이드 확장(그리드 폴백도 동일 정책)
+    _fit_canvas(diagram, content_x, content_y)
+
+
+def _diagram_extents(diagram: "ParsedDiagram") -> tuple[float, float]:
+    """콘텐츠 우하단 (max_x, max_y) inch."""
+    max_x = MARGIN
+    max_y = TITLE_H + MARGIN
+    for n in diagram.nodes.values():
+        max_x = max(max_x, n.x + n.w)
+        max_y = max(max_y, n.y + n.h)
+    for sg in diagram.subgraphs.values():
+        max_x = max(max_x, sg.x + sg.w)
+        max_y = max(max_y, sg.y + sg.h)
+    for e in diagram.edges:
+        for px, py in e.points:
+            max_x = max(max_x, px)
+            max_y = max(max_y, py)
+        if e.label_pos:
+            max_x = max(max_x, e.label_pos[0] + 0.8)
+            max_y = max(max_y, e.label_pos[1] + 0.25)
+    return max_x, max_y
+
+
+def _scale_geometry(
+    diagram: "ParsedDiagram",
+    content_x: float,
+    content_y: float,
+    scale: float,
+) -> None:
+    """콘텐츠 원점 기준 균등 축소/확대 (노드·클러스터·엣지 경로)."""
+    if abs(scale - 1.0) < 1e-9:
+        return
+    for node in diagram.nodes.values():
+        node.x = content_x + (node.x - content_x) * scale
+        node.y = content_y + (node.y - content_y) * scale
+        node.w *= scale
+        node.h *= scale
+    for sg in diagram.subgraphs.values():
+        sg.x = content_x + (sg.x - content_x) * scale
+        sg.y = content_y + (sg.y - content_y) * scale
+        sg.w *= scale
+        sg.h *= scale
+    for edge in diagram.edges:
+        edge.points = [
+            (content_x + (x - content_x) * scale,
+             content_y + (y - content_y) * scale)
+            for x, y in edge.points
+        ]
+        if edge.label_pos is not None:
+            lx, ly = edge.label_pos
+            edge.label_pos = (
+                content_x + (lx - content_x) * scale,
+                content_y + (ly - content_y) * scale,
+            )
+
+
+def _fit_canvas(
+    diagram: "ParsedDiagram",
+    content_x: float,
+    content_y: float,
+    *,
+    max_w: float = 22.0,
+    max_h: float = 14.0,
+    min_node_h: float = 0.45,
+) -> None:
+    """강제 16:9 축소 대신 슬라이드를 확장한다.
+
+    하드 캡을 넘을 때만 soft-scale 하되, 최소 노드 높이(min_node_h)를 보장한다.
+    """
+    max_x, max_y = _diagram_extents(diagram)
+    need_w = max_x + MARGIN
+    need_h = max_y + MARGIN
+    diagram.slide_w = max(SLIDE_W, need_w)
+    diagram.slide_h = max(SLIDE_H, need_h)
+
+    if diagram.slide_w <= max_w and diagram.slide_h <= max_h:
+        return
+
+    scale = min(max_w / need_w, max_h / need_h, 1.0)
+    if diagram.nodes:
+        shortest = min(n.h for n in diagram.nodes.values())
+        if shortest > 0 and shortest * scale < min_node_h:
+            # 가독성 우선: 캡을 넘겨도 최소 높이 유지
+            scale = min_node_h / shortest
+    _scale_geometry(diagram, content_x, content_y, scale)
+    max_x, max_y = _diagram_extents(diagram)
+    diagram.slide_w = max(SLIDE_W, max_x + MARGIN)
+    diagram.slide_h = max(SLIDE_H, max_y + MARGIN)
 
 
 def _scale_to_fit(
@@ -450,14 +542,16 @@ def _scale_to_fit(
     avail_w: float,
     avail_h: float,
 ) -> None:
-    """배치된 다이어그램이 슬라이드를 벗어나면 전체를 축소한다."""
+    """그리드 폴백용: 가용 영역 안으로 축소 (레거시).
+
+    Graphviz 경로에서는 `_fit_canvas`를 사용한다.
+    """
     if not diagram.nodes:
         return
 
     max_x = max(n.x + n.w for n in diagram.nodes.values())
     max_y = max(n.y + n.h for n in diagram.nodes.values())
 
-    # 서브그래프 영역도 포함
     for sg in diagram.subgraphs.values():
         max_x = max(max_x, sg.x + sg.w)
         max_y = max(max_y, sg.y + sg.h)
@@ -466,29 +560,52 @@ def _scale_to_fit(
     bound_b = content_y + avail_h
 
     if max_x <= bound_r and max_y <= bound_b:
-        return  # 축소 불필요
+        return
 
     scale_x = avail_w / (max_x - content_x) if max_x > bound_r else 1.0
     scale_y = avail_h / (max_y - content_y) if max_y > bound_b else 1.0
     scale = min(scale_x, scale_y)
-    # 잘림 방지를 위해 항상 슬라이드 안에 들어오도록 축소(넓은 그래프는 작아도 완전 표시).
     scale = max(scale, 0.12)
+    _scale_geometry(diagram, content_x, content_y, scale)
 
-    for node in diagram.nodes.values():
-        node.x = content_x + (node.x - content_x) * scale
-        node.y = content_y + (node.y - content_y) * scale
-        node.w *= scale
-        node.h *= scale
 
-    for sg in diagram.subgraphs.values():
-        sg.x = content_x + (sg.x - content_x) * scale
-        sg.y = content_y + (sg.y - content_y) * scale
-        sg.w *= scale
-        sg.h *= scale
+def _assign_edge_paths(
+    diagram: ParsedDiagram,
+    layout,
+    content_x: float,
+    content_y: float,
+    px2in: float,
+) -> None:
+    """LayoutResult.edges → diagram.edges.points / label_pos."""
+    from collections import defaultdict
+
+    for edge in diagram.edges:
+        edge.points = []
+        edge.label_pos = None
+
+    queues: dict[tuple[str, str], list] = defaultdict(list)
+    for ep in layout.edges:
+        if not ep.source or not ep.target or len(ep.points) < 2:
+            continue
+        queues[(ep.source, ep.target)].append(ep)
+
+    for edge in diagram.edges:
+        bucket = queues.get((edge.source, edge.target))
+        if not bucket:
+            continue
+        ep = bucket.pop(0)
+        edge.points = [
+            (content_x + x * px2in, content_y + y * px2in) for x, y in ep.points
+        ]
+        if ep.label_pos is not None:
+            edge.label_pos = (
+                content_x + ep.label_pos[0] * px2in,
+                content_y + ep.label_pos[1] * px2in,
+            )
 
 
 def apply_graphviz_layout(diagram: ParsedDiagram) -> bool:
-    """graphviz 레이아웃을 계산해 노드/서브그래프 좌표(inch)에 주입한다.
+    """graphviz 레이아웃을 계산해 노드/서브그래프/엣지 경로를 주입한다.
 
     박스 겹침·엣지 교차를 줄인다. dot 미설치·실패 시 False 반환 → grid 폴백.
     """
@@ -504,9 +621,10 @@ def apply_graphviz_layout(diagram: ParsedDiagram) -> bool:
     l_edges = [LEdge(e.source, e.target, e.label) for e in diagram.edges]
     l_clusters = [LCluster(sg.id, sg.label, list(sg.node_ids))
                   for sg in diagram.subgraphs.values()]
+    # 방향은 목표 종횡비에 맞게 고르고, 이후에는 슬라이드 확장(강제 축소 없음)
     layout = compute_graphviz_layout(
         l_nodes, l_edges, l_clusters, diagram.direction,
-        target_aspect=(SLIDE_W - 2 * MARGIN) / (SLIDE_H - TITLE_H - 2 * MARGIN)
+        target_aspect=(SLIDE_W - 2 * MARGIN) / (SLIDE_H - TITLE_H - 2 * MARGIN),
     )
     if layout is None or not layout.nodes:
         return False
@@ -531,8 +649,8 @@ def apply_graphviz_layout(diagram: ParsedDiagram) -> bool:
         sg.w = box.w * PX2IN
         sg.h = box.h * PX2IN
 
-    _scale_to_fit(diagram, content_x, content_y,
-                  SLIDE_W - 2 * MARGIN, SLIDE_H - TITLE_H - 2 * MARGIN)
+    _assign_edge_paths(diagram, layout, content_x, content_y, PX2IN)
+    _fit_canvas(diagram, content_x, content_y)
     return True
 
 
@@ -665,11 +783,117 @@ def _add_oval(slide, x: float, y: float, w: float, h: float,
     return shape
 
 
+def _simplify_polyline(points: list[tuple[float, float]],
+                       tol: float = 0.02) -> list[tuple[float, float]]:
+    """거의 일직선인 중간점을 제거해 직교 세그먼트를 단순화한다."""
+    if len(points) <= 2:
+        return list(points)
+    out = [points[0]]
+    for i in range(1, len(points) - 1):
+        x0, y0 = out[-1]
+        x1, y1 = points[i]
+        x2, y2 = points[i + 1]
+        # 동일 수평/수직 선상 → 중간점 스킵
+        colinear_h = abs(y0 - y1) < tol and abs(y1 - y2) < tol
+        colinear_v = abs(x0 - x1) < tol and abs(x1 - x2) < tol
+        if colinear_h or colinear_v:
+            continue
+        out.append(points[i])
+    out.append(points[-1])
+    # 중복 인접점 제거
+    dedup = [out[0]]
+    for p in out[1:]:
+        if abs(p[0] - dedup[-1][0]) > tol or abs(p[1] - dedup[-1][1]) > tol:
+            dedup.append(p)
+    return dedup if len(dedup) >= 2 else list(points)
+
+
+def _add_edge_label(slide, label: str, x_in: float, y_in: float) -> None:
+    """엣지 라벨 텍스트박스 (경로 옆 오프셋)."""
+    text = label.replace("\n", " ").strip()
+    if not text:
+        return
+    # 대략적 폭: 글자당 ~0.07"
+    w = max(0.9, min(3.5, 0.07 * len(text) + 0.3))
+    h = 0.28
+    label_box = slide.shapes.add_textbox(
+        Inches(x_in - w / 2), Inches(y_in - h / 2 - 0.08),
+        Inches(w), Inches(h),
+    )
+    tf = label_box.text_frame
+    tf.word_wrap = True
+    para = tf.paragraphs[0]
+    para.alignment = PP_ALIGN.CENTER
+    run = para.add_run()
+    run.text = text
+    run.font.size = Pt(8)
+    run.font.color.rgb = RGBColor(0x47, 0x55, 0x69)
+    try:
+        rPr = run._r.get_or_add_rPr()
+        ea = etree.SubElement(rPr, qn("a:ea"))
+        ea.set("typeface", "맑은 고딕")
+        latin = rPr.find(qn("a:latin"))
+        if latin is None:
+            latin = etree.SubElement(rPr, qn("a:latin"))
+        latin.set("typeface", "맑은 고딕")
+    except Exception:
+        pass
+
+
+def _add_connector_polyline(
+    slide,
+    points_in: list[tuple[float, float]],
+    label: str = "",
+    label_pos: Optional[tuple[float, float]] = None,
+    dashed: bool = False,
+) -> None:
+    """Graphviz waypoints를 stroke-only freeform 직교 폴리라인으로 그린다."""
+    pts = _simplify_polyline(points_in)
+    if len(pts) < 2:
+        return
+
+    start_x, start_y = pts[0]
+    builder = slide.shapes.build_freeform(Inches(start_x), Inches(start_y))
+    builder.add_line_segments(
+        [(Inches(x), Inches(y)) for x, y in pts[1:]],
+        close=False,
+    )
+    shape = builder.convert_to_shape()
+    shape.fill.background()
+    shape.line.color.rgb = RGBColor(0x47, 0x55, 0x69)
+    shape.line.width = Pt(1.25)
+    if dashed:
+        from pptx.enum.dml import MSO_LINE_DASH_STYLE
+        shape.line.dash_style = MSO_LINE_DASH_STYLE.DASH
+
+    ln = shape._element.find(".//" + qn("a:ln"))
+    if ln is not None:
+        # 기존 끝단 제거 후 화살표
+        for tag in ("a:tailEnd", "a:headEnd"):
+            for old in ln.findall(qn(tag)):
+                ln.remove(old)
+        tail = etree.SubElement(ln, qn("a:tailEnd"))
+        tail.set("type", "triangle")
+        tail.set("w", "med")
+        tail.set("len", "med")
+
+    remove_style_element(shape._element)
+    _remove_shadow(shape)
+
+    if label:
+        if label_pos is not None:
+            lx, ly = label_pos
+        else:
+            mid = pts[len(pts) // 2]
+            lx, ly = mid[0], mid[1]
+        _add_edge_label(slide, label, lx, ly)
+
+
 def _add_connector_elbow(slide, src_shape, dst_shape,
                          label: str = "", dashed: bool = False) -> None:
     """두 도형을 잇는 ELBOW(꺾임선) 커넥터 + 화살표 머리를 추가한다.
 
-    스마트 연결점: 두 도형의 상대 위치에 따라 상/하/좌/우 자동 선택.
+    Graphviz 경로가 없을 때의 폴백. 스마트 연결점: 상대 위치로 상/하/좌/우 선택.
     """
     from pptx.enum.shapes import MSO_CONNECTOR
 
@@ -765,20 +989,10 @@ def _add_connector_elbow(slide, src_shape, dst_shape,
 
     # 엣지 레이블
     if label:
-        mx = (sx + ex) // 2
-        my = (sy + ey) // 2
-        label_box = slide.shapes.add_textbox(
-            mx - Inches(0.6), my - Inches(0.15),
-            Inches(1.2), Inches(0.3)
-        )
-        tf = label_box.text_frame
-        tf.word_wrap = False
-        para = tf.paragraphs[0]
-        para.alignment = PP_ALIGN.CENTER
-        run = para.add_run()
-        run.text = label.replace("\n", " ")
-        run.font.size = Pt(7)
-        run.font.color.rgb = RGBColor(0x47, 0x55, 0x69)
+        mx = (sx + ex) / 2
+        my = (sy + ey) / 2
+        # EMU → inch
+        _add_edge_label(slide, label, mx / 914400, my / 914400)
 
 
 def _add_node_shape(slide, node: Node, palette_idx: int) -> object:
@@ -1726,9 +1940,9 @@ def mermaid_to_pptx(mermaid_code: str, title: str = "") -> bytes:
     # 3. PPTX 생성
     prs = Presentation()
 
-    # 16:9 슬라이드 크기 설정
-    prs.slide_width = Inches(SLIDE_W)
-    prs.slide_height = Inches(SLIDE_H)
+    # 콘텐츠에 맞게 슬라이드 크기 확장 (강제 16:9 축소 대신)
+    prs.slide_width = Inches(diagram.slide_w)
+    prs.slide_height = Inches(diagram.slide_h)
 
     # 빈 레이아웃 사용 (인덱스 6 = blank layout)
     blank_layout = prs.slide_layouts[6]
@@ -1744,7 +1958,7 @@ def mermaid_to_pptx(mermaid_code: str, title: str = "") -> bytes:
         title_box = slide.shapes.add_textbox(
             Inches(MARGIN),
             Inches(0.1),
-            Inches(SLIDE_W - 2 * MARGIN),
+            Inches(diagram.slide_w - 2 * MARGIN),
             Inches(TITLE_H)
         )
         tf = title_box.text_frame
@@ -1771,7 +1985,7 @@ def mermaid_to_pptx(mermaid_code: str, title: str = "") -> bytes:
         line_bar = slide.shapes.add_shape(
             MSO_SHAPE.ROUNDED_RECTANGLE,
             Inches(MARGIN), Inches(TITLE_H + 0.05),
-            Inches(SLIDE_W - 2 * MARGIN), Inches(0.03)
+            Inches(diagram.slide_w - 2 * MARGIN), Inches(0.03)
         )
         line_bar.fill.solid()
         line_bar.fill.fore_color.rgb = _PRIMARY_ACCENT_RGB
@@ -1796,14 +2010,25 @@ def mermaid_to_pptx(mermaid_code: str, title: str = "") -> bytes:
 
         shape_map[nid] = _add_node_shape(slide, node, palette_idx)
 
-    # 8. 엣지(ELBOW 커넥터 + 화살표) 추가
+    # 8. 엣지: Graphviz 직교 폴리라인 우선, 없으면 ELBOW 폴백
     for edge in diagram.edges:
+        dashed = "." in (edge.arrow or "")
+        if len(edge.points) >= 2:
+            _add_connector_polyline(
+                slide, edge.points,
+                label=edge.label,
+                label_pos=edge.label_pos,
+                dashed=dashed,
+            )
+            continue
         src_shape = shape_map.get(edge.source)
         dst_shape = shape_map.get(edge.target)
         if not src_shape or not dst_shape:
             continue
-
-        _add_connector_elbow(slide, src_shape, dst_shape, label=edge.label)
+        _add_connector_elbow(
+            slide, src_shape, dst_shape,
+            label=edge.label, dashed=dashed,
+        )
 
     # 9. BytesIO로 저장 후 바이트 반환
     output = BytesIO()
