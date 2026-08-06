@@ -162,46 +162,87 @@ class ParsedDiagram:
 # Mermaid 파서
 # ──────────────────────────────────────────────
 
-# 노드 정의 패턴 (엣지 선언이 아닌 단독 노드 정의)
-_NODE_ALONE_RE = re.compile(
-    r"^\s*(?P<id>[A-Za-z0-9_\-]+)"
-    r"(?P<shape_open>[\[\(\{\|]+)"
-    r"(?P<label>[^\]\)\}\|]*)"
-    r"(?P<shape_close>[\]\)\}\|]+)"
-    r"\s*$"
+# 노드 ID
+_ID = r"[A-Za-z][A-Za-z0-9_\-]*"
+
+# 괄호로 감싼 라벨만 허용 — 자유 텍스트가 `-->`의 `-`를 삼키지 못하게 함
+# [label] 안에서는 () 허용 (예: kcloud-operator/(Go module))
+_NODE_SHAPE_SRC = (
+    r"(?:"
+    r"\[(?P<src_br>[^\]]*)\]|"
+    r"\(\((?P<src_circ>[^)]*)\)\)|"
+    r"\((?P<src_round>[^)]*)\)|"
+    r"\{(?P<src_diam>[^}]*)\}"
+    r")?"
+)
+_NODE_SHAPE_DST = (
+    r"(?:"
+    r"\[(?P<dst_br>[^\]]*)\]|"
+    r"\(\((?P<dst_circ>[^)]*)\)\)|"
+    r"\((?P<dst_round>[^)]*)\)|"
+    r"\{(?P<dst_diam>[^}]*)\}"
+    r")?"
 )
 
-# 엣지 패턴: A --> B, A -->|label| B, A --- B, A -.-> B 등
-_EDGE_RE = re.compile(
-    r"^\s*(?P<src>[A-Za-z0-9_\-]+)"
-    r"\s*(?P<arrow>--?>|---?\.?-?>?|==+>?|-\.-?>?)"
-    r"(?:\|(?P<label>[^\|]*)\|)?"
-    r"\s*(?P<dst>[A-Za-z0-9_\-]+)"
-    r"\s*$"
+# 화살표: 긴 토큰 우선 (`-->` before `--`)
+_ARROW = (
+    r"(?P<arrow>"
+    r"-->|"
+    r"---|"
+    r"-\.->|"
+    r"==>|"
+    r"->>|"
+    r"--|"
+    r"-\.-|"
+    r"=="
+    r")"
 )
 
-# 엣지 + 인라인 노드 정의 패턴 (A[label] --> B[label])
 _EDGE_WITH_NODES_RE = re.compile(
-    r"^\s*(?P<src_id>[A-Za-z0-9_\-]+)"
-    r"(?P<src_open>[\[\(\{]+)?"
-    r"(?P<src_label>[^\]\)\}]*)?"
-    r"(?P<src_close>[\]\)\}]+)?"
-    r"\s*(?P<arrow>--?>|---?\.?-?>?|==+>?|-\.-?>?)"
-    r"(?:\|(?P<edge_label>[^\|]*)\|)?"
-    r"\s*(?P<dst_id>[A-Za-z0-9_\-]+)"
-    r"(?P<dst_open>[\[\(\{]+)?"
-    r"(?P<dst_label>[^\]\)\}]*)?"
-    r"(?P<dst_close>[\]\)\}]+)?"
+    rf"^\s*(?P<src_id>{_ID}){_NODE_SHAPE_SRC}"
+    rf"\s*{_ARROW}"
+    rf"(?:\|(?P<edge_label>[^|]*)\|)?"
+    rf"\s*(?P<dst_id>{_ID}){_NODE_SHAPE_DST}"
+    rf"\s*$"
+)
+
+_NODE_ALONE_RE = re.compile(
+    rf"^\s*(?P<id>{_ID})"
+    r"(?:"
+    r"\[(?P<br_label>[^\]]*)\]|"
+    r"\(\((?P<circ_label>[^)]*)\)\)|"
+    r"\((?P<round_label>[^)]*)\)|"
+    r"\{(?P<diam_label>[^}]*)\}"
+    r")"
     r"\s*$"
 )
+
+# 레거시 테스트/참조용 (더 이상 parse 경로에서 사용하지 않음)
+_EDGE_RE = re.compile(
+    rf"^\s*(?P<src>{_ID})"
+    rf"\s*{_ARROW}"
+    rf"(?:\|(?P<label>[^|]*)\|)?"
+    rf"\s*(?P<dst>{_ID})"
+    rf"\s*$"
+)
+
+
+def _shape_from_kind(kind: Optional[str]) -> str:
+    """라벨 종류 → 도형."""
+    if kind == "circ":
+        return "circle"
+    if kind == "diam":
+        return "diamond"
+    if kind == "round":
+        return "round"
+    return "rect"
 
 
 def _shape_from_tokens(open_tok: str, close_tok: str) -> str:
-    """괄호 토큰으로 도형 종류를 결정한다."""
+    """괄호 토큰으로 도형 종류를 결정한다 (하위 호환)."""
     if not open_tok:
         return "rect"
     o = open_tok.strip()
-    c = close_tok.strip() if close_tok else ""
     if o == "((":
         return "circle"
     if o == "{":
@@ -211,19 +252,67 @@ def _shape_from_tokens(open_tok: str, close_tok: str) -> str:
     return "rect"
 
 
+def _pick_shaped_label(groups: dict, prefix: str) -> tuple[Optional[str], str]:
+    """괄호 라벨 그룹에서 (raw_label, shape) 추출. 없으면 (None, rect).
+
+    prefix='src_' → src_br/src_circ/...
+    prefix='dst_' → dst_br/...
+    prefix=''     → br_label/circ_label/... (단독 노드)
+    """
+    mapping = (
+        ("br", "rect"),
+        ("circ", "circle"),
+        ("round", "round"),
+        ("diam", "diamond"),
+    )
+    for kind, shape in mapping:
+        key = f"{prefix}{kind}" if prefix else f"{kind}_label"
+        if groups.get(key) is not None:
+            return groups[key], shape
+    return None, "rect"
+
+
 def _clean_label(raw: str) -> str:
     """HTML 태그·엔티티를 정리해 순수 텍스트를 반환한다.
 
-    - <br/> → 공백(구분 유지)
+    - <br/> → 줄바꿈(의도적 멀티라인 유지)
     - 나머지 태그 제거
-    - &lt; &gt; &amp; 등 HTML 엔티티 디코드(예: &lt;vendor&gt; → <vendor>)
+    - &lt; &gt; &amp; 등 HTML 엔티티 디코드
     """
     import html as _html
-    text = re.sub(r"<br\s*/?>", " ", raw or "", flags=re.IGNORECASE)
+    text = re.sub(r"<br\s*/?>", "\n", raw or "", flags=re.IGNORECASE)
     text = re.sub(r"<[^>]+>", "", text)
     text = _html.unescape(text)
     text = text.strip('"').strip("'").strip()
     return text
+
+
+def _upsert_node(
+    diagram: ParsedDiagram,
+    nid: str,
+    raw_label: Optional[str],
+    shape: str,
+    current_subgraph: Optional[Subgraph],
+    *,
+    explicit: bool,
+) -> None:
+    """노드를 등록한다. explicit 괄호 라벨이 있으면 placeholder('-'/id)를 덮어쓴다."""
+    label = _clean_label(raw_label) if raw_label is not None else nid
+    if not label:
+        label = nid
+
+    if nid not in diagram.nodes:
+        diagram.nodes[nid] = Node(id=nid, label=label, shape=shape)
+    elif explicit:
+        cur = diagram.nodes[nid]
+        # 명시 라벨로 업그레이드 (파서 오인으로 '-' 가 들어간 경우 복구)
+        if cur.label in (nid, "-", "") or (label != nid and len(label) >= len(cur.label)):
+            cur.label = label
+            cur.shape = shape
+
+    if current_subgraph and nid not in current_subgraph.node_ids:
+        current_subgraph.node_ids.append(nid)
+        diagram.nodes[nid].subgraph_id = current_subgraph.id
 
 
 def parse_mermaid(code: str) -> ParsedDiagram:
@@ -254,7 +343,10 @@ def parse_mermaid(code: str) -> ParsedDiagram:
             continue
 
         # 서브그래프 시작
-        sg_start = re.match(r"^subgraph\s+(?P<id>[A-Za-z0-9_\-]+)\s*(?:\[(?P<label>[^\]]*)\])?\s*$", line, re.I)
+        sg_start = re.match(
+            rf"^subgraph\s+(?P<id>{_ID})\s*(?:\[(?P<label>[^\]]*)\])?\s*$",
+            line, re.I,
+        )
         if sg_start:
             sg_id = sg_start.group("id")
             sg_label = _clean_label(sg_start.group("label") or sg_id)
@@ -271,53 +363,48 @@ def parse_mermaid(code: str) -> ParsedDiagram:
         if re.match(r"^direction\s+", line, re.I):
             continue
 
-        # 엣지 + 인라인 노드 파싱 시도
+        # classDef / class / style 지시문은 스킵 (레이아웃 IR 비대상)
+        if re.match(r"^(?:classDef|class|style|linkStyle|click)\b", line, re.I):
+            continue
+
+        # 엣지 + 인라인 노드 파싱
         edge_match = _EDGE_WITH_NODES_RE.match(line)
         if edge_match:
             g = edge_match.groupdict()
             src_id = g["src_id"]
             dst_id = g["dst_id"]
 
-            # 소스 노드 등록
-            if src_id not in diagram.nodes:
-                shape = _shape_from_tokens(g.get("src_open") or "", g.get("src_close") or "")
-                label = _clean_label(g.get("src_label") or src_id)
-                diagram.nodes[src_id] = Node(id=src_id, label=label, shape=shape)
-            if current_subgraph and src_id not in current_subgraph.node_ids:
-                current_subgraph.node_ids.append(src_id)
-                diagram.nodes[src_id].subgraph_id = current_subgraph.id
+            src_raw, src_shape = _pick_shaped_label(g, "src_")
+            dst_raw, dst_shape = _pick_shaped_label(g, "dst_")
 
-            # 목적지 노드 등록
-            if dst_id not in diagram.nodes:
-                shape = _shape_from_tokens(g.get("dst_open") or "", g.get("dst_close") or "")
-                label = _clean_label(g.get("dst_label") or dst_id)
-                diagram.nodes[dst_id] = Node(id=dst_id, label=label, shape=shape)
-            if current_subgraph and dst_id not in current_subgraph.node_ids:
-                current_subgraph.node_ids.append(dst_id)
-                diagram.nodes[dst_id].subgraph_id = current_subgraph.id
+            _upsert_node(
+                diagram, src_id, src_raw, src_shape, current_subgraph,
+                explicit=src_raw is not None,
+            )
+            _upsert_node(
+                diagram, dst_id, dst_raw, dst_shape, current_subgraph,
+                explicit=dst_raw is not None,
+            )
 
             arrow = g.get("arrow") or "-->"
             edge_label = _clean_label(g.get("edge_label") or "")
-            diagram.edges.append(Edge(source=src_id, target=dst_id, label=edge_label, arrow=arrow))
+            # 엣지 라벨의 개행은 한 줄로
+            edge_label = edge_label.replace("\n", " ")
+            diagram.edges.append(
+                Edge(source=src_id, target=dst_id, label=edge_label, arrow=arrow)
+            )
             continue
 
         # 단독 노드 정의
         node_match = _NODE_ALONE_RE.match(line)
         if node_match:
-            nid = node_match.group("id")
-            shape = _shape_from_tokens(
-                node_match.group("shape_open"), node_match.group("shape_close")
+            g = node_match.groupdict()
+            nid = g["id"]
+            raw_label, shape = _pick_shaped_label(g, "")
+            _upsert_node(
+                diagram, nid, raw_label, shape, current_subgraph,
+                explicit=True,
             )
-            label = _clean_label(node_match.group("label") or nid)
-            if nid not in diagram.nodes:
-                diagram.nodes[nid] = Node(id=nid, label=label, shape=shape)
-            else:
-                # 레이블만 업데이트
-                diagram.nodes[nid].label = label
-                diagram.nodes[nid].shape = shape
-            if current_subgraph and nid not in current_subgraph.node_ids:
-                current_subgraph.node_ids.append(nid)
-                diagram.nodes[nid].subgraph_id = current_subgraph.id
 
     return diagram
 
@@ -674,55 +761,62 @@ def _set_text(shape, text: str, font_size: int = 9, bold: bool = False,
     """도형의 텍스트 프레임을 설정한다.
 
     텍스트 길이 대비 도형 폭이 좁으면 폰트를 자동 축소한다 (최소 7pt).
+    `\\n` 은 단락으로 분리한다.
     """
-    # 폭·높이 모두에 맞게 폰트 자동 축소 (멀티라인 세로 넘침 방지)
-    # 한글(전각)·영문 폭 차이를 반영해 시각폭(em) 기준으로 계산.
     import math
     from converters.text_metrics import _visual_width
-    text_em = max(0.5, _visual_width(text.replace("\n", " ")))  # 1줄 전체 시각폭(em)
-    avail_w_px = max(8.0, (shape.width / 914400) * 96 - 8)   # 좌우 마진 제외
-    avail_h_px = max(8.0, (shape.height / 914400) * 96 - 6)  # 상하 마진 제외
+
+    lines_text = [ln for ln in (text or "").split("\n")] or [""]
+    # 가장 긴 줄 기준 시각폭 + 줄 수로 폰트 축소
+    max_em = max((_visual_width(ln) for ln in lines_text), default=0.5)
+    text_em = max(0.5, max_em)
+    n_lines = max(1, len(lines_text))
+    avail_w_px = max(8.0, (shape.width / 914400) * 96 - 8)
+    avail_h_px = max(8.0, (shape.height / 914400) * 96 - 6)
     effective_size = 5
     for f in range(int(font_size), 4, -1):
-        px = f * 1.333                       # pt → px
-        full_w = text_em * px                # 1줄로 폈을 때 폭(px)
-        lines = max(1, math.ceil(full_w / avail_w_px))   # 줄바꿈 후 줄 수
-        if lines * px * 1.4 <= avail_h_px:   # 줄 수 × 줄높이 ≤ 박스 높이
+        px = f * 1.333
+        wrap_lines = max(1, math.ceil((text_em * px) / avail_w_px))
+        total_lines = max(n_lines, wrap_lines) if n_lines == 1 else n_lines * max(
+            1, math.ceil((text_em * px) / max(avail_w_px, 1))
+        )
+        # 명시 개행이 있으면 개행 줄 수를 우선하되, 각 줄 wrap도 반영
+        if n_lines > 1:
+            total_lines = 0
+            for ln in lines_text:
+                em = max(0.5, _visual_width(ln))
+                total_lines += max(1, math.ceil((em * px) / avail_w_px))
+        if total_lines * px * 1.35 <= avail_h_px:
             effective_size = f
             break
 
     tf = shape.text_frame
     tf.word_wrap = True
-    tf.auto_size = None  # 폰트 크기 계산으로 박스 내 맞춤(렌더러 독립)
-    tf.margin_top = Pt(1)
-    tf.margin_bottom = Pt(1)
-    tf.margin_left = Pt(3)
-    tf.margin_right = Pt(3)
+    tf.auto_size = None
+    tf.margin_top = Pt(2)
+    tf.margin_bottom = Pt(2)
+    tf.margin_left = Pt(4)
+    tf.margin_right = Pt(4)
 
-    # 기존 단락 초기화
     tf.clear()
-    para = tf.paragraphs[0]
-    para.alignment = PP_ALIGN.CENTER
-
-    run = para.add_run()
-    run.text = text
-    run.font.size = Pt(effective_size)
-    run.font.bold = bold
-    run.font.color.rgb = color
-
-    # 한글 폰트 우선: 맑은 고딕
-    try:
-        rPr = run._r.get_or_add_rPr()
-        # 동아시아 폰트 설정
-        ea = etree.SubElement(rPr, qn("a:ea"))
-        ea.set("typeface", "맑은 고딕")
-        # 라틴 폰트 설정
-        latin = rPr.find(qn("a:latin"))
-        if latin is None:
-            latin = etree.SubElement(rPr, qn("a:latin"))
-        latin.set("typeface", "맑은 고딕")
-    except Exception:
-        pass  # 폰트 설정 실패 시 기본값 사용
+    for i, ln in enumerate(lines_text):
+        para = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+        para.alignment = PP_ALIGN.CENTER
+        run = para.add_run()
+        run.text = ln
+        run.font.size = Pt(effective_size)
+        run.font.bold = bold
+        run.font.color.rgb = color
+        try:
+            rPr = run._r.get_or_add_rPr()
+            ea = etree.SubElement(rPr, qn("a:ea"))
+            ea.set("typeface", "맑은 고딕")
+            latin = rPr.find(qn("a:latin"))
+            if latin is None:
+                latin = etree.SubElement(rPr, qn("a:latin"))
+            latin.set("typeface", "맑은 고딕")
+        except Exception:
+            pass
 
 
 def _vertical_center_text(shape) -> None:

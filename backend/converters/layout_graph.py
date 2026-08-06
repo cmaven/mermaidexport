@@ -89,8 +89,9 @@ _DOT_SHAPE = {
 # ──────────────────────────────────────────────
 
 def _esc(text: str) -> str:
-    text = re.sub(r"<br\s*/?>", r"\\n", text or "", flags=re.IGNORECASE)
-    return text.replace("\\", "\\\\").replace('"', '\\"')
+    text = re.sub(r"<br\s*/?>", "\n", text or "", flags=re.IGNORECASE)
+    text = text.replace("\\", "\\\\").replace('"', '\\"')
+    return text.replace("\n", "\\n")
 
 
 def _node_size_in(node: LNode) -> tuple[float, float]:

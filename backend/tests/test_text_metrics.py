@@ -84,21 +84,21 @@ def test_br_variant_normalization():
 
 
 # ──────────────────────────────────────────────
-# 5. max_w 캡: 매우 긴 라벨도 width <= 360
+# 5. max_w 캡: 매우 긴 라벨도 width <= 520
 # ──────────────────────────────────────────────
 def test_max_w_cap():
-    """40개 대문자로 구성된 매우 긴 라벨 → 너비 == max_w(360)"""
-    # "W" 40개: visual_width=40*0.62=24.8em → raw=int(24.8*13+48)=370 > 360
-    very_long = "W" * 40
+    """매우 긴 라벨 → 너비 == max_w(520)"""
+    # "W" 70개: visual 충분히 커서 raw > 520
+    very_long = "W" * 70
     w, _ = estimate_text_size_px(very_long)
-    assert w == 360, f"max_w 캡 미적용: {w}"
+    assert w == 520, f"max_w 캡 미적용: {w}"
 
 
 def test_max_w_cap_realistic():
-    """실제 긴 서비스명도 max_w(360)를 초과하지 않아야 함"""
+    """실제 긴 서비스명도 max_w(520)를 초과하지 않아야 함"""
     long_label = "ThisIsAVeryLongServiceNameThatExceedsMaximumWidthCapForDrawioNode"
     w, _ = estimate_text_size_px(long_label)
-    assert w <= 360, f"max_w 초과: {w}"
+    assert w <= 520, f"max_w 초과: {w}"
 
 
 # ──────────────────────────────────────────────

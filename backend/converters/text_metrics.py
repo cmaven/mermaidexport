@@ -76,7 +76,7 @@ def estimate_text_size_px(
     font_size_px: int = 13,
     padding_px: int = 24,
     min_w: int = 100,
-    max_w: int = 360,
+    max_w: int = 520,
 ) -> tuple:
     """
     Mermaid 라벨 텍스트의 추정 크기를 (width_px, height_px)로 반환한다.
